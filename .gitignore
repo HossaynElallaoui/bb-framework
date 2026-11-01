@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+
+# Virtual environments
+venv/
+env/
+.env
+
+# Local state / logs
+agent_logs/
+*.log
+state.json
+.skills_index.json
+MANIFEST.json
+.circuit.json
+.circuit.lock
+.ratelimit.json
+.ratelimit.lock
+.ratelimit-lock
+
+# Evidence / scan outputs
+evidence/
+scan-results.txt
+*.pcap
+*.har
+
+# Burp Suite (binary / license)
+Burpsuite-Professional/
+Burp-Suite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Credentials / secrets
+*.ccache
+*.key
+*.pem
+*.pfx
+id_rsa*
+*.ovpn
+
+# Large data files
+*.jsonl
+*.sqlite
+*.db
+
+# Hexstrike cache
+hexstrike-ai-update/
