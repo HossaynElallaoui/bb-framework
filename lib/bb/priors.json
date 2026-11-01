@@ -1,0 +1,66 @@
+{
+  "generated_at": "2026-10-29T18:00:42+00:00",
+  "source_runs": [
+    "Autopilot-1792266677.json",
+    "Connected-1792265326.json",
+    "MakeSense-20261011-220340.regenerated.json",
+    "cap-1791749107.json",
+    "enigma-20261019.json"
+  ],
+  "calibration": {
+    "best_run": "Connected-1792265326.json",
+    "best_actions": 23,
+    "best_dead_ends": 1,
+    "worst_run": "Autopilot-1792266677.json",
+    "worst_actions": 196,
+    "worst_dead_ends": 26
+  },
+  "stall": {
+    "actions_threshold": 57,
+    "dead_end_rate": 0.25,
+    "min_actions": 20
+  },
+  "default_cost": 1.0,
+  "keyword_costs": [
+    {
+      "pattern": "writeup|report|document",
+      "cost": 0.2,
+      "category": "documentation"
+    },
+    {
+      "pattern": "recon|nmap|ffuf|gobuster|subdomain|scan|httpx|curl|http\\s+(get|request)",
+      "cost": 0.6,
+      "category": "recon-scan"
+    },
+    {
+      "pattern": "login|auth|session|cookie|token|jwt|oauth|saml|sso",
+      "cost": 1.2,
+      "category": "auth-flow"
+    },
+    {
+      "pattern": "idor|bola|object|tenant|ownership|cross-account|account_id",
+      "cost": 1.5,
+      "category": "authz-comparison"
+    },
+    {
+      "pattern": "upload|deserial|ssti|ssrf|xxe|sqli|rce|injection|smuggling|race",
+      "cost": 2.0,
+      "category": "exploit"
+    },
+    {
+      "pattern": "sudo|suid|capab|systemd|cron|incron|service|privilege|root|privesc",
+      "cost": 2.5,
+      "category": "privesc"
+    },
+    {
+      "pattern": "kerberos|kerberoast|asrep|dcsync|bloodhound|acl|adcs|ldap|smb|ntlm|relay",
+      "cost": 3.0,
+      "category": "ad"
+    },
+    {
+      "pattern": "brute|spray|wordlist|password",
+      "cost": 4.0,
+      "category": "brute-force"
+    }
+  ]
+}

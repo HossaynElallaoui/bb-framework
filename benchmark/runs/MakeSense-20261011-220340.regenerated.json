@@ -1,0 +1,13 @@
+{
+  "target": "",
+  "mode": "",
+  "unique_actions": 16,
+  "hypotheses_total": 10,
+  "hypotheses_confirmed": 7,
+  "hypotheses_refuted": 0,
+  "dead_ends": 1,
+  "time_to_first_path_s": null,
+  "time_to_user_s": 3622.116940498352,
+  "time_to_root_s": 4281.185257434845,
+  "time_to_flag_s": 4281.185285329819
+}

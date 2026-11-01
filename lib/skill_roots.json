@@ -1,0 +1,12 @@
+{
+  "_comment": "Real skill libraries already on disk, found via `tree ~/bugbounty`. Each root is searched for SKILL.md files (packaged skills) and, for 'flat' roots, bare *.md files one level under a category directory (learned/generated skills). Edit this file, not skills_lookup.py, if your layout changes.",
+  "packaged_roots": [
+    "bug-bounty-skills",
+    "cybersecurity-skills/skills",
+    "Anthropic-Cybersecurity-Skills/skills",
+    "agentic-bug-hunter/skills"
+  ],
+  "flat_roots": [
+    "skills"
+  ]
+}

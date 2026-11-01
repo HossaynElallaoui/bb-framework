@@ -1,0 +1,13 @@
+{
+  "target": "10.129.132.87",
+  "mode": "htb",
+  "unique_actions": 55,
+  "hypotheses_total": 10,
+  "hypotheses_confirmed": 8,
+  "hypotheses_refuted": 1,
+  "dead_ends": 3,
+  "time_to_first_path_s": null,
+  "time_to_user_s": 6542.473042011261,
+  "time_to_root_s": 6799.566591978073,
+  "time_to_flag_s": 6799.66565155983
+}

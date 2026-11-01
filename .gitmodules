@@ -1,0 +1,3 @@
+[submodule "agentic-bug-hunter"]
+	path = agentic-bug-hunter
+	url = https://github.com/awarexone/Agentic-Bug-Hunter.git

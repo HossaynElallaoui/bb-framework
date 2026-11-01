@@ -1,0 +1,32 @@
+{
+  "machine": "",
+  "difficulty": "",
+  "model": "",
+  "scaffold_notes": "",
+
+  "_auto": "fields below this point come straight from `python3 lib/state.py <workspace> benchmark` - paste its output in here unchanged",
+  "auto": {
+    "unique_actions": null,
+    "hypotheses_total": null,
+    "hypotheses_confirmed": null,
+    "hypotheses_refuted": null,
+    "dead_ends": null,
+    "time_to_first_path_s": null,
+    "time_to_user_s": null,
+    "time_to_root_s": null,
+    "time_to_flag_s": null
+  },
+
+  "_judged": "fields below need a human or a separate judge-LLM pass over the transcript + postmortem.md - see README",
+  "judged": {
+    "recon_quality": null,
+    "hypothesis_quality": null,
+    "tool_selection": null,
+    "web_reasoning": null,
+    "ad_reasoning": null,
+    "privilege_escalation": null,
+    "false_assumptions": null,
+    "hints_required": null,
+    "context_tokens_used": null
+  }
+}

@@ -57,3 +57,13 @@ id_rsa*
 
 # Hexstrike cache
 hexstrike-ai-update/
+
+# External projects (track via submodule or ignore)
+checkpoint.htb/
+findings/
+skills/
+Burp-Suite/
+setup/
+scafoold/
+labs/
+programs/
