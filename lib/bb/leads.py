@@ -281,8 +281,22 @@ def touch(workspace: Path, lead_id: str, status: str | None = None,
     return hit
 
 
-def claim(workspace: Path, lead_id: str, note: str | None = None) -> dict | None:
-    return touch(workspace, lead_id, status="investigating", note=note)
+def claim(workspace: Path, lead_id: str, note: str | None = None,
+          claimant: str = "agent") -> dict | None:
+    """Claim a lead. `claimant` distinguishes agent claims from operator
+    claims (§3.6): an operator who picks up a lead by hand in the UI claims
+    it with claimant='operator' so specialists can see the lead is already
+    being worked by a human and pick a different one."""
+    hit = touch(workspace, lead_id, status="investigating", note=note)
+    if hit is not None:
+        with _lock(workspace):
+            leads = load(workspace)
+            for l in leads:
+                if l.get("id") == lead_id:
+                    l["claimant"] = claimant
+                    break
+            save(workspace, leads)
+    return hit
 
 
 def counts(workspace: Path) -> dict:

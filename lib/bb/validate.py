@@ -321,6 +321,17 @@ def validate(f: dict, *, workspace: Path | None = None,
     g2, n2 = gate2_in_scope(f, workspace, base)
     g3, n3 = gate3_exploitable(f, base, workspace)
     g4, n4 = gate4_not_dup(f, base)
+    # §3.3 advisory: duplicates against OTHER researchers' prior reports
+    # (program known-issues list / operator dupcheck hook). Advisory only —
+    # never flips the gate; the operator decides before writing the report.
+    if workspace is not None:
+        try:
+            from lib.bb import dupecheck
+            dc = dupecheck.check(f, workspace, base)
+            if not dc["clean"]:
+                n4["advisory_known_issues"] = dc
+        except Exception:
+            pass
     qs = questions(f, n2, base)
     gates = [
         {"n": 1, "name": "is_real", "pass": g1, "notes": n1},

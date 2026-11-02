@@ -286,6 +286,7 @@ def cmd_run(args) -> int:
         agents=args.agents or list(config.ROLE_SPECIALISTS),
         timeout=args.timeout, no_ui=args.no_ui, dry_run=args.dry_run,
         verify_confirms=not args.no_verify,
+        speculate=max(0, args.speculate),
         resume=resume, base=base,
     )
     return runner.run(opts)
@@ -336,7 +337,8 @@ def cmd_leads(args) -> int:
             print(f"  why: {l['signal']} — {l['why']}")
         return 0
     if sub == "claim":
-        l = leads.claim(ws, args.lead_id, note=args.note)
+        l = leads.claim(ws, args.lead_id, note=args.note,
+                        claimant=getattr(args, "claimant", "agent") or "agent")
         if not l:
             print(f"lead not found: {args.lead_id}", file=sys.stderr)
             return 1
@@ -675,6 +677,18 @@ def cmd_benchmark(args) -> int:
     base = _base(args)
     sub = args.bench_cmd or "summary"
     if sub == "priors":
+        if args.refit:
+            res = priors.refit(base)
+            if args.json:
+                ui.json_out(res)
+            elif res.get("changed"):
+                ui.kv_table("priors refit (§2.3)", {
+                    cat: f"{f['base_cost']} -> {f['new_cost']} "
+                         f"({f['confirmed']}C/{f['refuted']}R)"
+                    for cat, f in sorted(res["fitted"].items())})
+            else:
+                print(f"priors unchanged: {res.get('reason')}")
+            return 0
         data = benchmark.derive(base, write=not args.no_write)
         if args.json:
             ui.json_out(data)
@@ -764,6 +778,112 @@ def cmd_state(args) -> int:
         return 2
     cmd = [sys.executable, str(base / "lib" / "state.py"), *argv]
     return subprocess.call(cmd)
+
+
+# ---- dupecheck ----------------------------------------------------------
+
+def cmd_dupecheck(args) -> int:
+    base = _base(args)
+    ws = _ws(args, base, required=False)
+    p = _resolve_finding(args, base, ws)
+    if not p or not p.exists():
+        return 2
+    f = validate.load_finding(p)
+    if not ws and f.get("workspace"):
+        ws = config.resolve_workspace(f["workspace"], base)
+    from lib.bb import dupecheck
+    res = dupecheck.check(f, ws, base)
+    if args.json:
+        ui.json_out(res)
+        return 0
+    if res["clean"]:
+        print("no duplicate signals (own registry is checked by gate 4; "
+              "known-issues/dupcheck hook clean or absent)")
+        return 0
+    if res["known_issues"]:
+        ui.panel("known-issues matches (program's own list)",
+                 "\n".join(f"- {h['line']} [matched: {', '.join(h['matched'])}]"
+                           for h in res["known_issues"]), style="yellow")
+    if res["external"]:
+        ui.panel("external dup-check hits", "\n".join(
+            f"- {e}" for e in res["external"]), style="yellow")
+    return 1
+
+
+# ---- router status ------------------------------------------------------
+
+def cmd_router(args) -> int:
+    base = _base(args)
+    from lib.bb import router as router_mod
+    cfg = router_mod.load_config(base)
+    stats_path = base / "benchmark" / "router-stats.json"
+    try:
+        data = config.read_json(stats_path, default={}) or {}
+    except Exception:
+        data = {}
+    models = data.get("models") or {}
+    rows = []
+    for model, tasks in sorted(models.items()):
+        for task, st in sorted(tasks.items()):
+            rows.append([model, task, st.get("turns", 0), st.get("ok", 0),
+                         st.get("api_error", 0), st.get("empty", 0)])
+    if args.json:
+        ui.json_out({"config": cfg, "stats": models})
+        return 0
+    if rows:
+        ui.table("router health (per model × task)", 
+                 ["model", "task", "turns", "ok", "api_err", "empty"], rows)
+    else:
+        print("(no router stats yet — they accumulate across runs)")
+    tasks = cfg.get("tasks") or {}
+    if tasks:
+        ui.kv_table("routing table (models.yaml)", {
+            task: " → ".join(models_list)
+            for task, models_list in sorted(tasks.items())})
+    else:
+        print("no models.yaml — passthrough (every turn uses the run model)")
+    fb = cfg.get("fallback") or []
+    if fb:
+        print(f"fallback tier: {' → '.join(fb)}")
+    return 0
+
+
+# ---- coverage map -------------------------------------------------------
+
+def cmd_coverage(args) -> int:
+    base = _base(args)
+    ws = _ws(args, base)
+    if not ws:
+        return 2
+    from lib.bb import coverage
+    st = TargetState.load(ws)
+    cov = coverage.derive(st)
+    gs = coverage.gaps(st)
+    if args.json:
+        ui.json_out({
+            "covered": {k: sorted(v) if isinstance(v, (set, dict)) else v
+                        for k, v in cov.items()},
+            "gaps": gs,
+        })
+        return 0
+    rows = [
+        ["port scans", ", ".join(f"{h}:{','.join(sorted(ps))}"
+                                 for h, ps in sorted(cov["port_scan"].items()))
+         or "(none)"],
+        ["web content discovery", ", ".join(sorted(cov["web_fuzz"])) or "(none)"],
+        ["auth-state testing", ", ".join(sorted(cov["auth_test"])) or "(none)"],
+        ["AD enumeration", ", ".join(sorted(cov["ad_enum"])) or "(none)"],
+        ["local privesc sweep", "yes" if cov["local_enum"] else "(none)"],
+        ["vuln probes", ", ".join(f"{h}:{','.join(sorted(cs))}"
+                                  for h, cs in sorted(cov["vuln_probe"].items()))
+         or "(none)"],
+    ]
+    ui.table(f"coverage — {config.rel(ws, base)}", ["area", "covered"], rows)
+    if gs:
+        ui.panel("gaps (prioritize)", "\n".join(f"- {g}" for g in gs), style="yellow")
+    else:
+        print("no coverage gaps detected")
+    return 0
 
 
 # ---- assets (scope-aware diffing) ---------------------------------------
@@ -949,7 +1069,11 @@ def cmd_next_hyp(args) -> int:
                 bias = fingerprint.category_bias(q, base)
         except Exception:
             bias = None
-    rows = priors.adjusted(st, pri, bias=bias)
+    try:
+        payouts = priors.load_payouts(ws)
+    except Exception:
+        payouts = None
+    rows = priors.adjusted(st, pri, bias=bias, payouts=payouts)
     if args.json:
         ui.json_out(rows)
         return 0
@@ -961,6 +1085,13 @@ def cmd_next_hyp(args) -> int:
              ["#", "id", "score", "conf", "stored cost", "eff. cost", "category",
               "sim hint", "statement"],
              table_rows)
+    try:
+        from lib.bb import coverage
+        f = coverage.footer(st)
+        if f:
+            print(f)
+    except Exception:
+        pass
     return 0
 
 
@@ -1041,6 +1172,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-ui", action="store_true")
     sp.add_argument("--no-verify", action="store_true",
                     help="disable the second-opinion pass on hypothesis confirms")
+    sp.add_argument("--speculate", type=int, default=0,
+                    help="§1.3: parallel specialists work the top-N hypotheses "
+                         "concurrently (bounded by --parallel; 0 = off)")
     sp.add_argument("--dry-run", action="store_true",
                     help="write prompts/logs but do not invoke opencode")
     sp.set_defaults(func=cmd_run)
@@ -1057,6 +1191,8 @@ def build_parser() -> argparse.ArgumentParser:
     x = lsub.add_parser("claim", parents=[common])
     x.add_argument("lead_id"); x.add_argument("--workspace", default=argparse.SUPPRESS)
     x.add_argument("--note", default=None)
+    x.add_argument("--claimant", default="agent", choices=["agent", "operator"],
+                   help="§3.6: operator claims stop specialists from double-working")
     x = lsub.add_parser("touch", parents=[common])
     x.add_argument("lead_id"); x.add_argument("--workspace", default=argparse.SUPPRESS)
     x.add_argument("--status", default=argparse.SUPPRESS); x.add_argument("--note", default=None)
@@ -1124,6 +1260,9 @@ def build_parser() -> argparse.ArgumentParser:
         x = bsub.add_parser(name, parents=[common])
         x.add_argument("--workspace", default=None)
         x.add_argument("--no-write", action="store_true")
+        if name == "priors":
+            x.add_argument("--refit", action="store_true",
+                           help="§2.3: refit keyword costs from workspace history")
     x = bsub.add_parser("compare", parents=[common])
     x.add_argument("files", nargs="*")
     x = bsub.add_parser("pin", parents=[common],
@@ -1191,6 +1330,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-sim-bias", action="store_true",
                     help="disable the similar-box category bias (§2.1)")
     sp.set_defaults(func=cmd_next_hyp)
+
+    sp = sub.add_parser("dupecheck", parents=[common],
+                        help="§3.3 pre-submission duplicate signals")
+    sp.add_argument("finding_id", nargs="?", default=None)
+    sp.add_argument("--file", default=None)
+    sp.add_argument("--workspace", default=None)
+    sp.set_defaults(func=cmd_dupecheck)
+
+    sp = sub.add_parser("router", parents=[common],
+                        help="multi-model routing table + health stats (§1.1)")
+    sp.add_argument("status", nargs="?", default="status", choices=["status"])
+    sp.set_defaults(func=cmd_router)
+
+    sp = sub.add_parser("coverage", parents=[common],
+                        help="what has been enumerated vs not (§1.7)")
+    sp.add_argument("--workspace", default=None)
+    sp.set_defaults(func=cmd_coverage)
 
     sp = sub.add_parser("assets", parents=[common],
                         help="scope-aware asset store + diff (§3.1)")

@@ -336,6 +336,18 @@ def manifest(base: Path | None = None, write: bool = True) -> dict:
     return data
 
 
+def check_local_fallback(base: Path | None = None) -> dict:
+    """§1.6: is there local model capacity if every free endpoint flakes?"""
+    rc, out = _run(["ollama", "list"], timeout=8)
+    if rc != 0 or not out.strip():
+        return {"status": WARN, "name": "local-fallback", "detail":
+                "ollama unavailable or empty — a total free-API outage will "
+                "stall runs; install ollama + a small model, or ignore"}
+    n = max(0, len([l for l in out.splitlines()[1:] if l.strip()]))
+    return {"status": OK, "name": "local-fallback", "detail":
+            f"ollama reachable with {n} model(s) — §1.6 fallback tier viable"}
+
+
 def run(base: Path | None = None, *, fix_writeups: bool = False,
         fix_markers: bool = False, remove_root_burp: bool = False, yes: bool = False,
         manifest_out: bool = True) -> list[dict]:
@@ -344,7 +356,7 @@ def run(base: Path | None = None, *, fix_writeups: bool = False,
         check_python(), check_rich(), check_opencode(), check_httpx(),
         check_mcp(), check_mcp_routes(), check_mcp_registration(),
         check_skill_roots(base), check_root_owned_burp(base),
-        check_empty_markers(base),
+        check_empty_markers(base), check_local_fallback(base),
     ]
     wcheck, extra = check_writeups(base)
     checks.append(wcheck)

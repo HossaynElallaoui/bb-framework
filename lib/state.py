@@ -314,10 +314,12 @@ class Message:
     id: str
     from_agent: str
     to_agent: str             # a specific agent name, or "all" for broadcast
-    msg_type: str             # info | finding | request | handoff
+    msg_type: str             # info | finding | request | handoff | blocker | status
     text: str
     timestamp: float = field(default_factory=_now)
     read_by: list[str] = field(default_factory=list)
+    hyp_id: str = ""          # §1.5 typed mailbox: exact filtering in HOT tier
+    payload: dict = field(default_factory=dict)  # structured, compresses better than prose
 
 
 class TargetState:
@@ -559,18 +561,27 @@ class TargetState:
     # ---- mailbox (multi-agent coordination) ----
 
     def post_message(self, from_agent: str, to_agent: str, text: str,
-                      msg_type: str = "info") -> Message:
+                      msg_type: str = "info", hyp_id: str = "",
+                      payload: dict | None = None) -> Message:
         msg = Message(id=f"m{self._next_msg_id}", from_agent=from_agent,
-                       to_agent=to_agent, msg_type=msg_type, text=text)
+                       to_agent=to_agent, msg_type=msg_type, text=text,
+                       hyp_id=hyp_id or "", payload=payload or {})
         self._next_msg_id += 1
         self.messages.append(msg)
         return msg
 
-    def inbox(self, agent: str, unread_only: bool = True) -> list[Message]:
-        """Messages addressed to `agent` directly, or broadcast to 'all'."""
+    def inbox(self, agent: str, unread_only: bool = True,
+              msg_type: str | None = None, hyp_id: str | None = None
+              ) -> list[Message]:
+        """Messages addressed to `agent` directly, or broadcast to 'all'.
+        Optional exact filters on the typed fields (§1.5)."""
         mine = [m for m in self.messages if m.to_agent in (agent, "all")]
         if unread_only:
             mine = [m for m in mine if agent not in m.read_by]
+        if msg_type:
+            mine = [m for m in mine if m.msg_type == msg_type]
+        if hyp_id:
+            mine = [m for m in mine if m.hyp_id == hyp_id]
         return sorted(mine, key=lambda m: m.timestamp)
 
     def mark_read(self, agent: str, msg_ids: list[str]) -> None:
@@ -751,14 +762,23 @@ def _cli():
     sp.add_argument("--from", dest="from_agent", required=True)
     sp.add_argument("--to", dest="to_agent", required=True, help="agent name, or 'all'")
     sp.add_argument("--type", dest="msg_type", default="info",
-                     choices=["info", "finding", "request", "handoff"])
+                     choices=["info", "finding", "request", "handoff",
+                              "blocker", "status"])
     sp.add_argument("--text", required=True)
+    sp.add_argument("--hyp-id", dest="hyp_id", default="",
+                    help="tie the message to a hypothesis (typed filtering)")
+    sp.add_argument("--payload", default=None,
+                    help="JSON object carried verbatim (typed mailbox §1.5)")
 
     sp = sub.add_parser("inbox", help="read a mailbox")
     sp.add_argument("--for", dest="agent", required=True)
     sp.add_argument("--all", action="store_true", help="include already-read messages")
+    sp.add_argument("--type", dest="msg_type", default=None,
+                    help="exact msg_type filter (typed mailbox §1.5)")
+    sp.add_argument("--hyp-id", dest="hyp_id", default=None,
+                    help="exact hypothesis filter")
     sp.add_argument("--full", action="store_true",
-                     help="print full message text (default: 400-char preview)")
+                    help="print full message text (default: 400-char preview)")
     sp.add_argument("--mark-read", nargs="*", default=None, metavar="MSG_ID",
                      help="mark these message ids read for this agent after printing")
 
@@ -849,16 +869,30 @@ def _run_command(args, cmd: str) -> None:
         return
 
     if cmd == "post-msg":
-        msg = state.post_message(args.from_agent, args.to_agent, args.text, args.msg_type)
+        payload = {}
+        if args.payload:
+            try:
+                payload = json.loads(args.payload)
+            except (ValueError, TypeError):
+                _reject(args.workspace, cmd, vars(args),
+                        "--payload must be a JSON object")
+        if not isinstance(payload, dict):
+            _reject(args.workspace, cmd, vars(args), "--payload must be a JSON object")
+        msg = state.post_message(args.from_agent, args.to_agent, args.text,
+                                 args.msg_type, hyp_id=args.hyp_id,
+                                 payload=payload)
         state.save()
-        print(f"posted {msg.id}: {args.from_agent} -> {args.to_agent} [{args.msg_type}]")
+        print(f"posted {msg.id}: {args.from_agent} -> {args.to_agent} [{args.msg_type}]"
+              + (f" hyp={msg.hyp_id}" if msg.hyp_id else ""))
 
     elif cmd == "inbox":
-        msgs = state.inbox(args.agent, unread_only=not args.all)
+        msgs = state.inbox(args.agent, unread_only=not args.all,
+                           msg_type=args.msg_type, hyp_id=args.hyp_id)
         for m in msgs:
             text = m.text if args.full else m.text[:400]
             suffix = "" if args.full or len(m.text) <= 400 else " … (--full for rest)"
-            print(f"[{m.id}] {m.from_agent} -> {m.to_agent} ({m.msg_type}): {text}{suffix}")
+            tag = m.msg_type + (f":{m.hyp_id}" if m.hyp_id else "")
+            print(f"[{m.id}] {m.from_agent} -> {m.to_agent} ({tag}): {text}{suffix}")
         if not msgs:
             print("(empty)")
         if args.mark_read:

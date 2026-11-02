@@ -117,20 +117,43 @@ def _fit(sections: list[tuple[str, str]], budget_tokens: int,
 
 def state_delta(state, agent: str, since: float = 0.0,
                 budget_tokens: int = STATE_TOKEN_BUDGET,
-                workspace: Path | None = None) -> str:
-    """Build the HOT/WARM state block for one turn."""
+                workspace: Path | None = None, hyp_offset: int = 0) -> str:
+    """Build the HOT/WARM state block for one turn.
+
+    hyp_offset > 0 (§1.3 speculative exploration): this specialist works the
+    offset-th ranked open hypothesis instead of the top one, so parallel
+    specialists explore competing hypotheses instead of colliding on the
+    same pick. First-confirmed wins; the others get refuted/requeued by
+    their own testing — same dedup/flock safety handles the race."""
     hot: list[str] = []
-    nxt = state.next_hypothesis()
-    if nxt:
-        hot.append(f"  current: {nxt.id} — {_one_line(nxt.statement, 160)} "
-                   f"[conf={nxt.confidence}, cost={nxt.cost}]")
+    if hyp_offset > 0:
+        ranked = sorted((h for h in state.hypotheses.values() if h.status == "open"),
+                        key=lambda h: h.score(), reverse=True)
+        nxt = ranked[hyp_offset] if hyp_offset < len(ranked) else (
+            ranked[0] if ranked else None)
+        if nxt is not None and hyp_offset < len(ranked):
+            hot.append(f"  assigned (speculative rank {hyp_offset + 1}): "
+                       f"{nxt.id} — {_one_line(nxt.statement, 160)} "
+                       f"[conf={nxt.confidence}, cost={nxt.cost}]")
+        elif nxt is not None:
+            hot.append(f"  assigned (speculative rank {hyp_offset + 1} unavailable — "
+                       f"fewer open hypotheses): {nxt.id} — "
+                       f"{_one_line(nxt.statement, 160)}")
+        else:
+            hot.append("  current: (no open hypothesis)")
     else:
-        hot.append("  current: (no open hypothesis)")
+        nxt = state.next_hypothesis()
+        if nxt:
+            hot.append(f"  current: {nxt.id} — {_one_line(nxt.statement, 160)} "
+                       f"[conf={nxt.confidence}, cost={nxt.cost}]")
+        else:
+            hot.append("  current: (no open hypothesis)")
 
     unread = state.inbox(agent, unread_only=True)
     lines = []
     for m in unread[:3]:
-        lines.append(f"  {m.id} from={m.from_agent} [{m.msg_type}] "
+        tag = m.msg_type + (f":{m.hyp_id}" if getattr(m, "hyp_id", "") else "")
+        lines.append(f"  {m.id} from={m.from_agent} [{tag}] "
                      f"{_one_line(m.text, 160)}")
     if len(unread) > 3:
         lines.append(f"  … {len(unread) - 3} more unread; "

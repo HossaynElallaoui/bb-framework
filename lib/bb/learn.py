@@ -221,10 +221,62 @@ def approve(workspace: Path, candidate_id: str, value: bool = True) -> dict | No
     return hit
 
 
+# ---- §3.4 cross-program redaction ---------------------------------------
+
+_HOST_RE = re.compile(
+    r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})\b", re.I)
+_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
+_LONGTOK_RE = re.compile(r"\b[A-Za-z0-9+/_=-]{24,}\b")
+
+
+def _scope_hosts(workspace: Path) -> set[str]:
+    """Hosts/patterns declared in the workspace's scope.md — these identify
+    the program and must not leak into the shared skill library."""
+    hosts: set[str] = set()
+    for name in ("scope.md", "scope.env"):
+        p = Path(workspace) / name
+        if not p.exists():
+            continue
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        for m in _HOST_RE.finditer(text):
+            hosts.add(m.group(1).lower())
+    return hosts
+
+
+def redact_body(body: str, workspace: Path, mode: str = "") -> tuple[str, int]:
+    """Scrub program-identifying details before a learned skill enters the
+    shared library: scope-declared hostnames, emails, and long secret-looking
+    tokens. The *technique* survives; the target does not. HTB lab writeups
+    keep their hostnames (lab targets are generic and the provenance is the
+    point), live programs are always scrubbed."""
+    if mode in ("htb", ""):
+        return body, 0
+    redactions = 0
+    text = body
+    hosts = _scope_hosts(workspace)
+    for h in sorted(hosts, key=len, reverse=True):
+        if h in text.lower():
+            text = re.sub(re.escape(h), "<target>", text, flags=re.I)
+            redactions += 1
+    text, n = _EMAIL_RE.subn("<redacted-email>", text)
+    redactions += n
+    text, n = _LONGTOK_RE.subn("<redacted-token>", text)
+    redactions += n
+    return text, redactions
+
+
 def commit(workspace: Path, base: Path | None = None) -> dict:
     base = base or config.root()
     data = load(workspace)
     written, skipped = [], []
+    try:
+        st = config.read_json(Path(workspace) / "state.json", default={}) or {}
+        mode = str(st.get("mode") or "")
+    except Exception:
+        mode = ""
     for c in data.get("candidates", []):
         if not c.get("approved") or c.get("committed"):
             continue
@@ -236,8 +288,11 @@ def commit(workspace: Path, base: Path | None = None) -> dict:
             c["committed"] = True
             c["commit_skipped"] = "exists"
             continue
+        body, n_red = redact_body(c["body"], workspace, mode)
+        if n_red:
+            c["redactions_applied"] = n_red
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(c["body"])
+        dest.write_text(body)
         written.append(str(config.rel(dest, base)))
         c["committed"] = True
         c["committed_path"] = str(config.rel(dest, base))

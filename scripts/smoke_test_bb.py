@@ -316,6 +316,42 @@ def main() -> int:
             "--no-ui", "--no-verify", expect=0)
         print("[15] verify pass: parse/kickback/no-verify flag")
 
+        # §1.5 typed mailbox, §1.7 coverage, §1.1 router, §2.3 refit
+        run(root, "state", str(ws), "post-msg", "--from", "web-agent",
+            "--to", "critic-agent", "--type", "finding", "--hyp-id", "h2",
+            "--payload", '{"port": 443}', "--text", "finding on h2", expect=0)
+        r = run(root, "state", str(ws), "inbox", "--for", "critic-agent",
+                "--type", "finding", "--hyp-id", "h2", expect=0)
+        assert "finding:h2" in r.stdout
+        run(root, "coverage", "--workspace", str(ws), expect=0)
+        run(root, "router", "status", expect=0)
+        run(root, "benchmark", "priors", "--refit", expect=0)
+        print("[16] typed mailbox / coverage / router / priors refit")
+
+        # §2.4 diagnosis, §3.2 payouts, §3.3 dupecheck, §3.4 redaction, §3.6 claimant
+        sys.path.insert(0, str(REAL))
+        from lib.bb import diagnose as bb_diag
+        d = bb_diag.diagnose(ws, "web-agent")
+        assert isinstance(d.get("diagnosis"), str)
+        (ws / "payouts.json").write_text(json.dumps({"exploit": 2000}))
+        run(root, "next-hyp", "--workspace", str(ws), expect=0)
+        (ws / "known-issues.md").write_text(
+            "# known issues\n- idor in /v1/users already reported by X\n")
+        r = run(root, "dupecheck", "F-001", "--workspace", str(ws), expect=1)
+        assert "known-issues" in r.stdout.lower()
+        from lib.bb import learn as bb_learn
+        body, n = bb_learn.redact_body(
+            "scan api.demo.test as admin@demo.test tok=abcdef123456789012345678",
+            ws, "bugbounty")
+        assert "api.demo.test" not in body and "<target>" in body and n >= 2, body
+        body_htb, n0 = bb_learn.redact_body("scan api.demo.test", ws, "htb")
+        assert n0 == 0 and "api.demo.test" in body_htb
+        run(root, "leads", "claim", lid, "--workspace", str(ws),
+            "--claimant", "operator", expect=0)
+        r = run(root, "leads", "list", "--workspace", str(ws), "--json", expect=0)
+        assert json.loads(r.stdout)[0].get("claimant") == "operator"
+        print("[17] diagnose / payouts / dupecheck / redaction / claimant")
+
         print("\nALL BB CHECKS PASSED")
         return 0
     finally:

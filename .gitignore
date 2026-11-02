@@ -67,3 +67,6 @@ setup/
 scafoold/
 labs/
 programs/
+
+# §1.1 router runtime health (accumulates every run)
+benchmark/router-stats.json

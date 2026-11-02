@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lib.bb import config, context, policy, ratelimit, scope, statex, ui, verify
+from lib.bb import config, context, policy, ratelimit, router, scope, statex, ui, verify
 from lib.bb.session import OpenCodeServer
 from lib.state import TargetState
 
@@ -58,6 +58,7 @@ class RunOptions:
     dry_run: bool = False
     resume: bool = False
     verify_confirms: bool = True
+    speculate: int = 0
     base: Path | None = None
 
 
@@ -108,15 +109,19 @@ def _read_preamble(base: Path) -> str:
 def build_prompt(agent: str, workspace: Path, target: str, machine: str,
                  mode: str, base: Path, continuation: bool = False,
                  since: float = 0.0, round_no: int = 0,
-                 state: TargetState | None = None) -> str:
+                 state: TargetState | None = None,
+                 hyp_offset: int = 0) -> str:
     state = state or TargetState.load(workspace)
     if continuation:
         delta = context.state_delta(state, agent, since=since,
-                                    workspace=workspace)
+                                    workspace=workspace, hyp_offset=hyp_offset)
+        assign = (f"Work YOUR ASSIGNED hypothesis (speculative rank "
+                  f"{hyp_offset + 1}); other specialists hold the top ranks — "
+                  f"do not duplicate them.\n\n") if hyp_offset > 0 else ""
         return f"""CONTINUE round {round_no} as {agent}. Your session already
 holds your role, mode policy, and prior turns.
 
-{delta}
+{assign}{delta}
 
 Take exactly one turn now, then stop. Do not repeat a command already in
 WARM; run `bb state $BB_WORKSPACE already-tried --cmd "<cmd>"` if unsure.
@@ -129,7 +134,7 @@ WARM; run `bb state $BB_WORKSPACE already-tried --cmd "<cmd>"` if unsure.
     state_summary = context.full_state_summary(state, agent, workspace=workspace)
     hot_warm = context.state_delta(state, agent, since=0.0,
                                    budget_tokens=context.STATE_TOKEN_BUDGET,
-                                   workspace=workspace)
+                                   workspace=workspace, hyp_offset=hyp_offset)
     skill = context.skill_hint(base, agent, target, machine, mode)
     skill_block = f"\n--- BEST-MATCH SKILL (cached) ---\n{skill}\n" if skill else ""
     sim_block = ""
@@ -140,6 +145,14 @@ WARM; run `bb state $BB_WORKSPACE already-tried --cmd "<cmd>"` if unsure.
         sim_block = ""
     if sim_block:
         sim_block = f"\n{sim_block}\n"
+    cov_block = ""
+    try:
+        from lib.bb import coverage
+        cov_block = coverage.hint_block(workspace, state)
+    except Exception:
+        cov_block = ""
+    if cov_block:
+        cov_block = f"\n{cov_block}\n"
     return f"""{preamble}
 
 WORKSPACE={workspace}
@@ -153,7 +166,7 @@ BB_CLI=bb
 
 --- HOT/WARM DELTA (COLD via state CLI) ---
 {hot_warm}
-{skill_block}{sim_block}
+{skill_block}{sim_block}{cov_block}
 --- YOUR ROLE: agents/{agent}.md ---
 {role}
 
@@ -162,7 +175,7 @@ BB_CLI=bb
 
 You have a persistent session for this run. Later turns receive only a
 HOT/WARM delta, so use the state CLI for anything not shown here.
-1. Work the highest confidence/cost open hypothesis
+{f"1. Work YOUR ASSIGNED hypothesis (speculative rank {hyp_offset + 1}) — other specialists hold the top ranks; do not duplicate them" if hyp_offset > 0 else "1. Work the highest confidence/cost open hypothesis"}
 2. Do NOT repeat commands already run
 3. Do NOT retry known dead ends
 4. Drain your inbox: `bb state $BB_WORKSPACE inbox --for {agent}`
@@ -225,7 +238,7 @@ def _run_turn_http(agent: str, workspace: Path, target: str, machine: str,
                    sessions: dict[str, str], seen: dict[str, float],
                    session_agents: dict[str, str],
                    log_file: Path, timeout: int, round_no: int,
-                   server: OpenCodeServer) -> TurnResult:
+                   server: OpenCodeServer, hyp_offset: int = 0) -> TurnResult:
     started = time.time()
     sid = sessions.get(agent)
     created = False
@@ -236,7 +249,7 @@ def _run_turn_http(agent: str, workspace: Path, target: str, machine: str,
     since = seen.get(agent, 0.0)
     prompt = build_prompt(agent, workspace, target, machine, mode, base,
                           continuation=not created, since=since,
-                          round_no=round_no)
+                          round_no=round_no, hyp_offset=hyp_offset)
     seen[agent] = time.time()
     res = server.prompt(sid, prompt, directory=workspace, agent="build",
                         model=model, timeout=timeout)
@@ -245,7 +258,8 @@ def _run_turn_http(agent: str, workspace: Path, target: str, machine: str,
         created = True
         session_agents[sid] = agent
         prompt = build_prompt(agent, workspace, target, machine, mode, base,
-                              continuation=False, since=0.0, round_no=round_no)
+                              continuation=False, since=0.0, round_no=round_no,
+                              hyp_offset=hyp_offset)
         seen[agent] = time.time()
         res = server.prompt(sid, prompt, directory=workspace, agent="build",
                             model=model, timeout=timeout)
@@ -280,7 +294,8 @@ def run_turn(agent: str, workspace: Path, target: str, machine: str, mode: str,
              server: OpenCodeServer | None = None,
              seen: dict[str, float] | None = None,
              round_no: int = 0,
-             session_agents: dict[str, str] | None = None) -> TurnResult:
+             session_agents: dict[str, str] | None = None,
+             hyp_offset: int = 0) -> TurnResult:
     seen = seen if seen is not None else {}
     session_agents = session_agents if session_agents is not None else {}
     stamp = time.time_ns()
@@ -288,8 +303,9 @@ def run_turn(agent: str, workspace: Path, target: str, machine: str, mode: str,
     if server is not None:
         return _run_turn_http(agent, workspace, target, machine, mode, base,
                               model, sessions, seen, session_agents, log_file,
-                              timeout, round_no, server)
-    prompt = build_prompt(agent, workspace, target, machine, mode, base)
+                              timeout, round_no, server, hyp_offset=hyp_offset)
+    prompt = build_prompt(agent, workspace, target, machine, mode, base,
+                          hyp_offset=hyp_offset)
     cmd = _build_command(agent, prompt, model, sessions, base)
     if dry_run:
         log_file.write_text(f"--- DRY RUN ---\ncmd: {' '.join(cmd[:6])} ...\n\n{prompt}\n")
@@ -453,10 +469,20 @@ def run(opts: RunOptions) -> int:
     if policy_obj and policy_obj.rate_per_min and policy_obj.rate_per_min < 60:
         parallel = 1  # honour a slow agreed ceiling; never fan out past it
     parallel = max(1, min(parallel, len(opts.agents), opts.max_workers))
+    # §1.3 speculative exploration: bounded by actual concurrency headroom;
+    # serial runs gain nothing from hypothesis offsets
+    speculate = max(0, min(opts.speculate, parallel, len(opts.agents)))
+    if parallel <= 1:
+        speculate = 0
 
     statex.set_many(workspace, {"bb_model": opts.model or "", "bb_mode": mode,
                                 "bb_parallel": parallel})
     _prewarm_skills(base)
+    # §1.1/§1.6: per-(model, task-type) health across runs; per-run escalation
+    try:
+        router.bind(base / "benchmark" / "router-stats.json")
+    except Exception:
+        pass
     limiter = ratelimit.AdaptiveLimiter(
         workspace, max_parallel=parallel,
         rate_per_min=(policy_obj.rate_per_min if policy_obj else None))
@@ -565,8 +591,17 @@ def run(opts: RunOptions) -> int:
 
             def do(agent: str) -> TurnResult:
                 turn_started = time.time()
+                turn_model = opts.model
+                try:
+                    turn_model = router.pick(opts.model, agent, base)
+                except Exception:
+                    turn_model = opts.model
+                # §1.3: stable per-agent slot — agent k of the roster works the
+                # k-th ranked open hypothesis when speculation is on
+                hyp_offset = (opts.agents.index(agent) % speculate
+                              if speculate > 0 else 0)
                 _turn_event(workspace, "turn_start", agent, rnd,
-                            model=opts.model or "")
+                            model=turn_model or "")
                 try:
                     confirmed_before = {
                         h.id for h in TargetState.load(workspace).hypotheses.values()
@@ -579,12 +614,13 @@ def run(opts: RunOptions) -> int:
                                   f"({limiter.snapshot()['parallel']} slots)",
                            "warn")
                 statex.heartbeat(workspace, round=rnd, agent=agent, phase="turn",
-                                 rounds_completed=rnd - 1, model=opts.model or "")
+                                 rounds_completed=rnd - 1, model=turn_model or "")
                 try:
                     res = run_turn(agent, workspace, target, machine, mode,
-                                   opts.model, sessions, log_dir, opts.timeout,
+                                   turn_model, sessions, log_dir, opts.timeout,
                                    opts.dry_run, base, server=server, seen=seen,
-                                   round_no=rnd, session_agents=session_agents)
+                                   round_no=rnd, session_agents=session_agents,
+                                   hyp_offset=hyp_offset)
                 except Exception as exc:
                     res = TurnResult(agent=agent, ok=False, returncode=1,
                                      error=f"driver exception: {exc}")
@@ -592,9 +628,25 @@ def run(opts: RunOptions) -> int:
                             ok=bool(res.ok), error=(res.error or "")[:300],
                             duration=round(time.time() - turn_started, 3),
                             tokens=(res.tokens or {}).get("total"),
-                            cost=res.cost or 0.0, server=bool(res.server))
+                            cost=res.cost or 0.0, server=bool(res.server),
+                            model=turn_model or "")
                 limited = ratelimit.is_rate_limit_error(
                     (res.error or "") + " " + (res.output_tail or ""))
+                api_error = limited or (res.error or "").startswith(
+                    "provider API error")
+                try:
+                    router.note(turn_model, res.ok, api_error,
+                                task=router.classify(agent), empty=res.empty)
+                    if router.summary()["consecutive_api_errors"] >= router.ESCALATE_AFTER:
+                        switched = router.escalate(opts.model, agent, base)
+                        if switched and switched != opts.model:
+                            ui.log("bb", f"free-API outage suspected ({router.ESCALATE_AFTER} "
+                                         f"consecutive API errors) — switching model to "
+                                         f"{switched}", "error")
+                            opts.model = switched
+                            turn_model = switched
+                except Exception:
+                    pass
                 limiter.release(ok=res.ok, rate_limited=limited)
                 if limited:
                     ui.log(agent, "provider rate limit — limiter halved "
@@ -615,6 +667,16 @@ def run(opts: RunOptions) -> int:
                         statex.record_failure(workspace, agent, res.error or "unknown")
                         ui.log(agent, f"turn failed: {res.error} — backing off, "
                                       f"no same-action retry", "error")
+                        n = turn_failures[agent]
+                        if n == 2 or (n > 2 and n % 3 == 0):
+                            try:
+                                from lib.bb import diagnose as diag
+                                d = diag.handle_stuck(workspace, agent, n)
+                                if d.get("diagnosis"):
+                                    ui.log("bb", f"stuck-diagnosis {agent}: "
+                                                 f"{d['diagnosis']}", "warn")
+                            except Exception:
+                                pass
                     elif res.empty:
                         statex.record_failure(workspace, agent, "empty turn")
                         ui.log(agent, "empty turn — recording and moving on", "warn")
@@ -643,8 +705,12 @@ def run(opts: RunOptions) -> int:
                 for hyp in fresh:
                     _turn_event(workspace, "turn_start", "verifier", rnd,
                                 model=opts.model or "", verify=hyp.id)
+                    try:
+                        verify_model = router.pick(opts.model, "verifier", base)
+                    except Exception:
+                        verify_model = opts.model
                     v = verify.second_opinion(server, workspace, hyp, agent,
-                                              opts.model, actions)
+                                              verify_model, actions)
                     tok = v.get("tokens") or {}
                     if tok or v.get("cost"):
                         try:
@@ -789,6 +855,15 @@ def run(opts: RunOptions) -> int:
     try:
         from lib.bb import learn
         learn.generate(workspace, base)
+    except Exception:
+        pass
+
+    # §2.3: keep the cost priors drifting toward what has been working —
+    # refit silently once enough new benchmark snapshots accumulate.
+    try:
+        from lib.bb import priors as priors_mod
+        if priors_mod.runs_since_refit(base) >= 3:
+            priors_mod.refit(base)
     except Exception:
         pass
 

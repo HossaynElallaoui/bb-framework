@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 from lib.bb import config
+from lib.state import TargetState
 
 PRIORS_PATH = Path(__file__).with_name("priors.json")
 
@@ -126,15 +127,41 @@ def suggest_cost(hyp, priors: dict | None = None) -> tuple[float, str]:
     return float(priors.get("default_cost", DEFAULT_COST)), "default"
 
 
+PAYOUT_MAX = 0.25  # §3.2 tiebreaker multiplier cap at the top payout tier
+
+
+def load_payouts(workspace: Path | None) -> dict[str, float]:
+    """programs/<slug>/payouts.json: category -> expected payout amount.
+    Purely advisory scoring signal; missing file = no adjustment."""
+    if not workspace:
+        return {}
+    data = config.read_json(Path(workspace) / "payouts.json", default=None)
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for k, v in data.items():
+        try:
+            out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def adjusted(state, priors: dict | None = None,
-             bias: dict[str, dict] | None = None) -> list[dict]:
+             bias: dict[str, dict] | None = None,
+             payouts: dict[str, float] | None = None) -> list[dict]:
     """Ranked open hypotheses with prior-adjusted cost (does not mutate).
 
     `bias` maps category -> {mult, source, sim} from the similar-box
     fingerprint index (§2.1); matching categories get a modest score
     multiplier so hypotheses that worked on the most similar past box rise,
-    without ever hiding the underlying confidence/cost math."""
+    without ever hiding the underlying confidence/cost math.
+
+    `payouts` (§3.2) maps category -> expected bounty; equally-promising
+    hypotheses get ordered by expected value as a tiebreaker, capped at
+    PAYOUT_MAX so money never outweighs confidence/cost."""
     priors = priors or load_priors()
+    max_payout = max(payouts.values()) if payouts else 0.0
     out = []
     for h in state.hypotheses.values():
         if h.status != "open":
@@ -150,6 +177,10 @@ def adjusted(state, priors: dict | None = None,
         if b:
             score *= b["mult"]
             hint = f"← {b['source']} (sim {b['sim']:.2f})"
+        amount = (payouts or {}).get(category)
+        if amount and max_payout > 0:
+            score *= 1.0 + PAYOUT_MAX * (amount / max_payout)
+            hint = (hint + f" | ${amount:g}").strip(" |")
         out.append({
             "id": h.id, "statement": h.statement, "status": h.status,
             "confidence": h.confidence, "cost": h.cost, "prior_cost": prior,
@@ -175,3 +206,86 @@ def apply_to_state(state, priors: dict | None = None) -> list[dict]:
             changed.append({"id": h.id, "old": h.cost, "new": prior, "category": category})
             h.cost = prior
     return changed
+
+
+# ---- §2.3 recurring recalibration ---------------------------------------
+
+MIN_SAMPLES = 3      # a category needs this many decided hypotheses to refit
+SHIFT = 0.5          # cost moves halfway toward the observed hit/miss imbalance
+COST_MIN, COST_MAX = 0.2, 6.0
+
+
+def refit(base: Path | None = None) -> dict:
+    """Refit keyword costs against the accumulated workspace history.
+
+    For each category: confirmation rate across every decided hypothesis in
+    every workspace. High hit-rate categories get cheaper (tried earlier),
+    low hit-rate categories get dearer — the priors drift toward what has
+    actually been working as the solved-corpus grows."""
+    base = base or config.root()
+    pri = load_priors(base)
+    base_costs = {e["category"]: float(e["cost"])
+                  for e in pri.get("keyword_costs", [])}
+    stats: dict[str, dict[str, int]] = {}
+    for ws in config.discover_workspaces(base):
+        try:
+            state = TargetState.load(ws)
+        except Exception:
+            continue
+        for h in state.hypotheses.values():
+            if h.status not in ("confirmed", "refuted"):
+                continue
+            _cost, cat = suggest_cost(h, pri)
+            if cat == "default":
+                continue
+            s = stats.setdefault(cat, {"confirmed": 0, "refuted": 0})
+            s[h.status] += 1
+    fitted, rows = {}, []
+    for cat, base_cost in base_costs.items():
+        s = stats.get(cat)
+        if not s or s["confirmed"] + s["refuted"] < MIN_SAMPLES:
+            continue
+        n = s["confirmed"] + s["refuted"]
+        hit_rate = s["confirmed"] / n
+        new_cost = round(max(COST_MIN, min(COST_MAX,
+                       base_cost * (1 + SHIFT * (1 - 2 * hit_rate)))), 2)
+        fitted[cat] = {"base_cost": base_cost, "new_cost": new_cost,
+                       "confirmed": s["confirmed"], "refuted": s["refuted"]}
+        rows.append((cat, new_cost))
+    if not rows:
+        return {"changed": False, "reason": "not enough decided hypotheses "
+                f"(need >= {MIN_SAMPLES} per category)", "fitted": fitted}
+    by_cat = dict(rows)
+    new_costs = []
+    for e in pri.get("keyword_costs", []):
+        entry = dict(e)
+        if e["category"] in by_cat:
+            entry["cost"] = by_cat[e["category"]]
+        new_costs.append(entry)
+    pri["keyword_costs"] = new_costs
+    pri["generated_at"] = config.iso()
+    pri["refit"] = {"at": config.iso(), "fitted": fitted}
+    save_priors(pri, base=base)
+    return {"changed": True, "fitted": fitted}
+
+
+def runs_since_refit(base: Path | None = None) -> int:
+    """Benchmark snapshots newer than the last priors generation (§2.3
+    auto-trigger threshold check)."""
+    base = base or config.root()
+    pri = config.read_json(priors_path(base), default=None)
+    if not pri or not pri.get("generated_at"):
+        return 10**9
+    try:
+        import datetime
+        gen = datetime.datetime.fromisoformat(pri["generated_at"]).timestamp()
+    except (ValueError, TypeError):
+        return 10**9
+    n = 0
+    for p in (base / "benchmark" / "runs").glob("*.json"):
+        try:
+            if p.stat().st_mtime > gen:
+                n += 1
+        except OSError:
+            continue
+    return n

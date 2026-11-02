@@ -1,0 +1,28 @@
+# §1.1 multi-model router — vyceai catalog (validated live).
+# Order by measured success rate once benchmark/router-stats.json accumulates;
+# this initial table is capability-guessed: flash/cheap tiers parse, big
+# models synthesize, glm-5.3-flash stays primary for exploit turns (proven
+# in the Connected gold run).
+
+tasks:
+  recon-parse:
+    - vyceai/agnes-3.0-flash
+    - vyceai/deepseek-v4-flash-lr
+    - vyceai/glm-5.3-flash
+  hypothesis-synthesis:
+    - vyceai/claude-sonnet-4-6
+    - vyceai/gpt-6-luna
+    - vyceai/deepseek-v4.1
+  exploit-attempt:
+    - vyceai/glm-5.3-flash
+    - vyceai/deepseek-v4.1
+    - vyceai/gpt-6-luna
+  report-draft:
+    - vyceai/claude-sonnet-4-6
+    - vyceai/gpt-6-luna
+
+# §1.6: after 3 consecutive provider API-error turns the router escalates
+# down this tier — local ollama would go last if installed.
+fallback:
+  - vyceai/glm-5.3-flash
+  - vyceai/agnes-3.0-flash

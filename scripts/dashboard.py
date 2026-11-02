@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from lib.state import TargetState  # noqa: E402
-from lib.bb import config, learn, priors, statex  # noqa: E402
+from lib.bb import config, learn, leads, priors, statex  # noqa: E402
 
 STEER_AGENTS = sorted({
     "all", "orchestrator", "critic-agent", "recon-agent", "web-agent",
@@ -343,6 +343,12 @@ PAGE = r"""<!doctype html>
   </div>
   <textarea id="steer-text" rows="5"
     placeholder="Message to the agent, e.g.&#10;'hypothesis h7 looks wrong - SSH banner says OpenSSH 9.x, re-check the JotForm CVE instead'&#10;Finish with: when done, update the hypothesis and post a reply to all."></textarea>
+  <div class="section-title">claim a lead you are working by hand — specialists will skip it (§3.6)</div>
+  <div class="formrow">
+    <label>lead id</label><input id="claim-lead-id" size="12" placeholder="lb-xxxxxx">
+    <button class="btn" onclick="claimLead()">claim as operator</button>
+    <span id="claim-status"></span>
+  </div>
   <div class="section-title">what the agents said</div>
   <div id="replies"><div class="empty">loading...</div></div>
 </div>
@@ -558,6 +564,18 @@ async function sendSteer() {
     const j = await r.json();
     if (j.ok) { st.textContent=`posted to ${to} (${j.msgid}) — picked up next turn`; st.className='ok';
       document.getElementById('steer-text').value=''; }
+    else { st.textContent='failed: '+(j.error||r.status); st.className='err'; }
+  } catch(e) { st.textContent='failed: '+e; st.className='err'; }
+}
+async function claimLead() {
+  const st = document.getElementById('claim-status');
+  const id = document.getElementById('claim-lead-id').value.trim();
+  if (!current || !id) { st.textContent='workspace + lead id required'; st.className='err'; return; }
+  try {
+    const r = await fetch('/api/leads/claim', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({workspace: current, id})});
+    const j = await r.json();
+    if (j.ok) { st.textContent=`claimed ${id} (operator) — agents will skip it`; st.className='ok'; }
     else { st.textContent='failed: '+(j.error||r.status); st.className='err'; }
   } catch(e) { st.textContent='failed: '+e; st.className='err'; }
 }
@@ -862,6 +880,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             out = r.stdout.strip().split()
             self._json({"ok": True, "msgid": out[1] if len(out) > 1 else "?"})
+            return
+
+        if parsed.path == "/api/leads/claim":
+            # §3.6: operator claims a lead by hand so specialists never
+            # double-work something a human already picked up
+            workspace = body.get("workspace", "")
+            if workspace not in valid:
+                self._json({"error": "unknown workspace"}, status=404)
+                return
+            hit = leads.claim(valid[workspace], str(body.get("id", "")),
+                              note=str(body.get("note", "")) or None,
+                              claimant="operator")
+            if not hit:
+                self._json({"error": "lead not found"}, status=404)
+                return
+            self._json({"ok": True, "lead": hit})
             return
 
         if parsed.path == "/api/pause":

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-29T18:00:42+00:00",
+  "generated_at": "2026-11-02T21:19:58+00:00",
   "source_runs": [
     "Autopilot-1792266677.json",
     "Connected-1792265326.json",
@@ -24,37 +24,37 @@
   "keyword_costs": [
     {
       "pattern": "writeup|report|document",
-      "cost": 0.2,
+      "cost": 0.23,
       "category": "documentation"
     },
     {
       "pattern": "recon|nmap|ffuf|gobuster|subdomain|scan|httpx|curl|http\\s+(get|request)",
-      "cost": 0.6,
+      "cost": 0.44,
       "category": "recon-scan"
     },
     {
       "pattern": "login|auth|session|cookie|token|jwt|oauth|saml|sso",
-      "cost": 1.2,
+      "cost": 1.13,
       "category": "auth-flow"
     },
     {
       "pattern": "idor|bola|object|tenant|ownership|cross-account|account_id",
-      "cost": 1.5,
+      "cost": 1.25,
       "category": "authz-comparison"
     },
     {
       "pattern": "upload|deserial|ssti|ssrf|xxe|sqli|rce|injection|smuggling|race",
-      "cost": 2.0,
+      "cost": 1.6,
       "category": "exploit"
     },
     {
       "pattern": "sudo|suid|capab|systemd|cron|incron|service|privilege|root|privesc",
-      "cost": 2.5,
+      "cost": 2.43,
       "category": "privesc"
     },
     {
       "pattern": "kerberos|kerberoast|asrep|dcsync|bloodhound|acl|adcs|ldap|smb|ntlm|relay",
-      "cost": 3.0,
+      "cost": 3.5,
       "category": "ad"
     },
     {
@@ -62,5 +62,52 @@
       "cost": 4.0,
       "category": "brute-force"
     }
-  ]
+  ],
+  "refit": {
+    "at": "2026-11-02T21:19:58+00:00",
+    "fitted": {
+      "documentation": {
+        "base_cost": 0.2,
+        "new_cost": 0.23,
+        "confirmed": 1,
+        "refuted": 2
+      },
+      "recon-scan": {
+        "base_cost": 0.6,
+        "new_cost": 0.44,
+        "confirmed": 22,
+        "refuted": 7
+      },
+      "auth-flow": {
+        "base_cost": 1.2,
+        "new_cost": 1.13,
+        "confirmed": 30,
+        "refuted": 24
+      },
+      "authz-comparison": {
+        "base_cost": 1.5,
+        "new_cost": 1.25,
+        "confirmed": 6,
+        "refuted": 3
+      },
+      "exploit": {
+        "base_cost": 2.0,
+        "new_cost": 1.6,
+        "confirmed": 14,
+        "refuted": 6
+      },
+      "privesc": {
+        "base_cost": 2.5,
+        "new_cost": 2.43,
+        "confirmed": 10,
+        "refuted": 9
+      },
+      "ad": {
+        "base_cost": 3.0,
+        "new_cost": 3.5,
+        "confirmed": 4,
+        "refuted": 8
+      }
+    }
+  }
 }

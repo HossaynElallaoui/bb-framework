@@ -20,6 +20,20 @@ A deterministic, round-robin multi-agent framework for bug bounty hunting and Ha
   skeleton and runs the deterministic gates immediately (confirmed-but-unvalidated is visible)
 - **Second-opinion pass**: every confirm gets a cheap, differently-prompted verifier turn on
   the existing evidence; a KICKBACK deterministically reverts the confirm (`--no-verify` to disable)
+- **Multi-model router**: `models.yaml` maps task types (recon-parse / hypothesis-synthesis /
+  exploit-attempt / report-draft) to ordered model lists with per-(model, task) health tracking;
+  API-error storms escalate down the list into a `fallback:` tier (`bb router status`)
+- **Speculative exploration**: `--speculate N` — parallel specialists work the top-N hypotheses
+  concurrently instead of colliding on the top pick
+- **Coverage map**: `bb coverage` — what has been enumerated vs not, derived from the action log;
+  gaps steer recon and `next-hyp`
+- **Payout weighting**: `programs/<slug>/payouts.json` orders equally-promising hypotheses by
+  expected value (capped tiebreaker)
+- **Dupecheck**: `bb dupecheck` — known-issues + operator dupcheck-hook signals before a
+  report cycle is sunk into an already-filed bug
+- **Learn redaction**: skills committed from live programs are scrubbed of hostnames/emails/tokens
+- **Operator lead claims**: `bb leads claim --claimant operator` (and dashboard button) so
+  specialists never double-work a lead a human picked up
 - **Benchmark priors**: hypothesis confidence auto-adjusted from historical runs
 - **Regression gate**: `bb benchmark pin` + `bb benchmark gate` fail any change that
   regresses actions/dead-ends/time-to-root beyond a tolerance band vs the pinned gold run

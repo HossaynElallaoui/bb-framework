@@ -1,0 +1,21 @@
+# §1.1 multi-model router + §1.6 local fallback.
+#
+# Copy to models.yaml at the repo root. Without this file every turn uses
+# the `bb run --model` value (passthrough) and only health stats accumulate.
+#
+# Each task type maps to an ordered model list: the first healthy entry is
+# used for that turn type. Health is tracked per (model, task) across runs
+# in benchmark/router-stats.json — after a few runs, order the lists by
+# measured success rate, not by guesswork.
+#
+# `fallback:` is the §1.6 tier: after 3 consecutive provider API-error turns
+# the router escalates down this list (put a local ollama model last so a
+# total free-API outage degrades to local capacity instead of stalling).
+
+tasks:
+  recon-parse: []          # e.g. [dahl/zai-org/GLM-5.3-Flash, deepseek-v4.1-flash-free]
+  hypothesis-synthesis: [] # synthesis turns deserve the strongest model you have
+  exploit-attempt: []
+  report-draft: []         # used by report-drafting flows, not the run loop
+
+fallback: []               # e.g. [ollama/qwen2.5-coder:7b]
