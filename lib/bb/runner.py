@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lib.bb import config, context, policy, ratelimit, scope, statex, ui
+from lib.bb import config, context, policy, ratelimit, scope, statex, ui, verify
 from lib.bb.session import OpenCodeServer
 from lib.state import TargetState
 
@@ -32,7 +32,7 @@ _PRINT_LOCK = threading.Lock()
 DEFAULT_PREAMBLE = """You are the <ROLE> specialist inside `bb`. Take exactly one turn, then stop.
 1. Drain your inbox: `bb state $BB_WORKSPACE inbox --for <ROLE>`.
 2. Dedup check: `bb state $BB_WORKSPACE already-tried --cmd "<cmd>"` before proposing a command.
-3. Check the skill library: `bb skills "<keywords>"` before hand-rolling a technique.
+3. Check the skill library: `bb skills "<keywords>"` before hand-rolling a technique. For standard multi-step chains prefer a composite bundle: `bb composite list`.
 4. Submit the action to critic-agent (`bb gate --agent <ROLE> ...`). If BLOCKed, pick the next-cheapest open hypothesis.
 5. Act (hexstrike MCP, shell via capture-command.py, or Burp).
 6. Record: `bb state ... record-action/update-hyp/mark-failed/mark-milestone`.
@@ -57,6 +57,7 @@ class RunOptions:
     no_ui: bool = False
     dry_run: bool = False
     resume: bool = False
+    verify_confirms: bool = True
     base: Path | None = None
 
 
@@ -131,6 +132,14 @@ WARM; run `bb state $BB_WORKSPACE already-tried --cmd "<cmd>"` if unsure.
                                    workspace=workspace)
     skill = context.skill_hint(base, agent, target, machine, mode)
     skill_block = f"\n--- BEST-MATCH SKILL (cached) ---\n{skill}\n" if skill else ""
+    sim_block = ""
+    try:
+        from lib.bb import fingerprint
+        sim_block = fingerprint.hint_block(workspace, base, mode)
+    except Exception:
+        sim_block = ""
+    if sim_block:
+        sim_block = f"\n{sim_block}\n"
     return f"""{preamble}
 
 WORKSPACE={workspace}
@@ -144,7 +153,7 @@ BB_CLI=bb
 
 --- HOT/WARM DELTA (COLD via state CLI) ---
 {hot_warm}
-{skill_block}
+{skill_block}{sim_block}
 --- YOUR ROLE: agents/{agent}.md ---
 {role}
 
@@ -558,6 +567,12 @@ def run(opts: RunOptions) -> int:
                 turn_started = time.time()
                 _turn_event(workspace, "turn_start", agent, rnd,
                             model=opts.model or "")
+                try:
+                    confirmed_before = {
+                        h.id for h in TargetState.load(workspace).hypotheses.values()
+                        if h.status == "confirmed"}
+                except Exception:
+                    confirmed_before = set()
                 waited = limiter.wait_slot()
                 if waited >= 2:
                     ui.log(agent, f"limiter held the turn {waited:.0f}s "
@@ -605,7 +620,57 @@ def run(opts: RunOptions) -> int:
                         ui.log(agent, "empty turn — recording and moving on", "warn")
                     else:
                         ui.log(agent, (res.output_tail or "(turn complete)").splitlines()[-1][:200])
+                if opts.verify_confirms and server is not None and res.ok \
+                        and not res.empty and not opts.dry_run:
+                    _verify_new_confirms(agent, confirmed_before)
                 return res
+
+            def _verify_new_confirms(agent: str, confirmed_before: set) -> None:
+                """§1.2: every confirm produced by this turn gets a cheap,
+                differently-prompted second opinion on the existing evidence.
+                A KICKBACK deterministically reverts the confirm."""
+                try:
+                    st = TargetState.load(workspace)
+                except Exception:
+                    return
+                fresh = [h for h in st.hypotheses.values()
+                         if h.status == "confirmed" and h.id not in confirmed_before]
+                if not fresh:
+                    return
+                actions = [(a.command, a.result_summary)
+                           for a in sorted(st.actions.values(),
+                                           key=lambda a: a.timestamp)]
+                for hyp in fresh:
+                    _turn_event(workspace, "turn_start", "verifier", rnd,
+                                model=opts.model or "", verify=hyp.id)
+                    v = verify.second_opinion(server, workspace, hyp, agent,
+                                              opts.model, actions)
+                    tok = v.get("tokens") or {}
+                    if tok or v.get("cost"):
+                        try:
+                            statex.record_tokens(workspace, "verifier", tok,
+                                                 cost=v.get("cost") or 0.0,
+                                                 duration=0.0)
+                        except Exception:
+                            pass
+                    if v["verdict"] == "kickback":
+                        verify.apply_kickback(workspace, hyp.id, v["reason"], agent)
+                        ui.log("verifier", f"KICKBACK {hyp.id}: {v['reason']}",
+                               "warn")
+                    elif v["verdict"] == "agree":
+                        verify.record_agree(workspace, hyp.id, agent)
+                        ui.log("verifier", f"agree: {hyp.id} stands")
+                    else:
+                        verify.record_agree(workspace, hyp.id, agent,
+                                            verdict=v["verdict"])
+                        ui.log("verifier", f"verifier {v['verdict']} on {hyp.id}: "
+                                           f"{v['reason']} — confirm stands",
+                                           "warn")
+                    _turn_event(workspace, "turn_end", "verifier", rnd,
+                                ok=v["verdict"] in ("agree", "kickback"),
+                                error=(v["reason"] or "")[:300]
+                                if v["verdict"] == "error" else "",
+                                verify=hyp.id, verdict=v["verdict"])
 
             ran = 0
             if parallel <= 1:

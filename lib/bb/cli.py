@@ -15,10 +15,12 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from lib.bb import __version__, benchmark, config, doctor, learn, leads, priors, report
-from lib.bb import gate, runner, scope, statex, ui, validate
+from lib.bb import gate, regression, runner, scope, statex, ui, validate
+from lib.bb import assets, fingerprint
 from lib.state import TargetState
 
 AGENT_CHOICES = ["all", *config.ALL_AGENTS]
@@ -283,6 +285,7 @@ def cmd_run(args) -> int:
         max_workers=args.max_workers,
         agents=args.agents or list(config.ROLE_SPECIALISTS),
         timeout=args.timeout, no_ui=args.no_ui, dry_run=args.dry_run,
+        verify_confirms=not args.no_verify,
         resume=resume, base=base,
     )
     return runner.run(opts)
@@ -582,7 +585,91 @@ def cmd_learn(args) -> int:
     return 0
 
 
-# ---- benchmark ----------------------------------------------------------
+# ---- benchmark / regression gate ---------------------------------------
+
+def _tolerances_from_args(args) -> dict | None:
+    if not any((args.actions_pct, args.deadends_abs, args.deadends_pct,
+                args.time_pct, args.confirmed_abs)):
+        return None
+    tol = json.loads(json.dumps(regression.DEFAULT_TOLERANCES))  # deep copy
+    if args.actions_pct is not None:
+        tol["unique_actions"]["pct"] = args.actions_pct
+    if args.deadends_abs is not None:
+        tol["dead_ends"]["abs"] = args.deadends_abs
+    if args.deadends_pct is not None:
+        tol["dead_ends"]["pct"] = args.deadends_pct
+    if args.time_pct is not None:
+        for k in ("time_to_user_s", "time_to_root_s", "time_to_flag_s"):
+            tol[k]["pct"] = args.time_pct
+    if args.confirmed_abs is not None:
+        tol["hypotheses_confirmed"]["abs"] = args.confirmed_abs
+    return tol
+
+
+def cmd_benchmark_pin(args) -> int:
+    base = _base(args)
+    run_file = Path(args.run_from) if args.run_from else regression.pick_best_run(
+        args.machine, base)
+    if not run_file or not run_file.exists():
+        print(f"error: no saved run found for machine {args.machine!r} — "
+              f"pass --from <benchmark/runs/<file>.json>", file=sys.stderr)
+        return 2
+    data = regression.pin_baseline(args.machine, run_file, base,
+                                   tolerances=_tolerances_from_args(args),
+                                   notes=args.notes or "")
+    if args.json:
+        ui.json_out(data)
+    else:
+        ui.kv_table(f"baseline pinned — {data['machine']}", {
+            "pinned from": data["pinned_from"],
+            **{k: v for k, v in data["metrics"].items()},
+            "baseline file": config.rel(regression.baseline_path(
+                args.machine, base), base),
+        })
+    return 0
+
+
+def cmd_benchmark_gate(args) -> int:
+    base = _base(args)
+    if args.run:
+        try:
+            payload, _ = regression.run_gate(
+                args.machine, base, target=args.target, model=args.model,
+                max_rounds=args.max_rounds, max_minutes=args.max_minutes,
+                dry_run=args.dry_run, keep=args.keep, no_ui=args.no_ui)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    else:
+        baseline = regression.load_baseline(args.machine, base)
+        if not baseline:
+            print(f"error: no baseline pinned for {args.machine!r} — "
+                  f"`bb benchmark pin --machine {args.machine}` first",
+                  file=sys.stderr)
+            return 2
+        snap = Path(args.snapshot) if args.snapshot else \
+            regression.pick_latest_run(args.machine, base)
+        if not snap or not snap.exists():
+            print(f"error: no snapshot to compare — pass --snapshot "
+                  f"<benchmark/runs/<file>.json> or use --run", file=sys.stderr)
+            return 2
+        payload = regression.compare(baseline, benchmark.load_run(snap))
+        payload["machine"] = args.machine
+        payload["baseline_file"] = config.rel(
+            regression.baseline_path(args.machine, base), base)
+        payload["snapshot_file"] = config.rel(snap, base)
+    if args.json:
+        ui.json_out(payload)
+    else:
+        verdict = payload["verdict"]
+        ui.table(f"regression gate — {payload['machine']} [{verdict.upper()}]",
+                 ["metric", "baseline", "observed", "delta", "band", "verdict"],
+                 payload["rows"])
+        if payload.get("regressions"):
+            ui.panel("regressions", "\n".join(f"- {r}" for r in payload["regressions"]),
+                     style="red")
+    return 0 if payload["verdict"] == "pass" else 1
+
 
 def cmd_benchmark(args) -> int:
     base = _base(args)
@@ -679,6 +766,148 @@ def cmd_state(args) -> int:
     return subprocess.call(cmd)
 
 
+# ---- assets (scope-aware diffing) ---------------------------------------
+
+def cmd_assets(args) -> int:
+    base = _base(args)
+    ws = _ws(args, base)
+    if not ws:
+        return 2
+    if args.assets_cmd == "scan":
+        try:
+            res = assets.scan(ws, base, mode=args.mode,
+                              ingest_leads=args.ingest_leads)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        if args.json:
+            ui.json_out(res)
+            return 0
+        ui.kv_table(f"asset diff — {config.rel(ws, base)}", {
+            "new": ", ".join(res["added"]) or "(none)",
+            "gone": ", ".join(res["gone"]) or "(none)",
+            "total tracked": res["total"],
+            "rejected out-of-scope": res["rejected_out_of_scope"],
+            "leads ingested": res["added_leads"],
+        })
+        return 0
+    data = assets.show(ws)
+    if args.json:
+        ui.json_out(data)
+        return 0
+    if not data["total"]:
+        print("(no assets tracked yet — `bb assets scan` after scope.md is filled)")
+        return 0
+    ui.kv_table(f"known assets — {config.rel(ws, base)}", {
+        "updated": (data["updated_at"] and time.strftime(
+            "%Y-%m-%d %H:%M:%S", time.localtime(data["updated_at"]))) or "never",
+        "hosts": "\n".join(data["hosts"]) or "(none)",
+        "urls": "\n".join(data["urls"][:20]) or "(none)",
+        "total": data["total"],
+    })
+    return 0
+
+
+# ---- composite action bundles -------------------------------------------
+
+def _composites(base: Path) -> dict:
+    data = config.read_json(base / "composites" / "manifest.json", default=None)
+    return data if isinstance(data, dict) else {}
+
+
+def cmd_composite(args) -> int:
+    base = _base(args)
+    comp = _composites(base)
+    if args.composite_cmd == "show":
+        rec = comp.get(args.name)
+        if not rec:
+            print(f"error: unknown composite {args.name!r}; choose from "
+                  f"{', '.join(sorted(comp)) or '(none)'}", file=sys.stderr)
+            return 2
+        if args.json:
+            ui.json_out(rec)
+        else:
+            ui.kv_table(f"composite — {args.name}", {
+                "usage": rec.get("usage", ""),
+                "description": rec.get("description", ""),
+                "modes": ", ".join(rec.get("modes", [])),
+                "replaces turns": rec.get("replaces_turns", "?"),
+                "script": config.rel(base / "composites" / rec.get("script", ""),
+                                     base),
+            })
+        return 0
+    if not comp:
+        print("no composites registered (composites/manifest.json missing or empty)")
+        return 0
+    rows = []
+    for name in sorted(comp):
+        rec = comp[name]
+        script = base / "composites" / rec.get("script", "")
+        rows.append([name, "ok" if script.exists() else "MISSING",
+                     rec.get("usage", ""), rec.get("replaces_turns", "?")])
+    if args.json:
+        ui.json_out(comp)
+        return 0
+    ui.table("composite bundles (run via capture-command.py; one turn each)",
+             ["name", "script", "usage", "~turns saved"], rows)
+    print("invoke: python3 scripts/capture-command.py -- composites/<script> <args>")
+    return 0
+
+
+# ---- fingerprints / similar-box retrieval -------------------------------
+
+def cmd_fingerprints(args) -> int:
+    base = _base(args)
+    recs = fingerprint.rebuild_index(base)
+    if args.json:
+        ui.json_out(recs)
+        return 0
+    if not recs:
+        print("no fingerprintable workspaces (labs/HTB/machines/* with nmap output)")
+        return 0
+    rows = [[r["machine"], "yes" if r["solved"] else "no", len(r["ports"]),
+             ", ".join(r["confirmed_categories"]) or "-", r["root_s"] or "-"]
+            for r in recs]
+    ui.table(f"fingerprint index — {len(recs)} machines",
+             ["machine", "solved", "ports", "confirmed cats", "root_s"], rows)
+    return 0
+
+
+def cmd_similar(args) -> int:
+    base = _base(args)
+    ws = _ws(args, base)
+    if not ws:
+        return 2
+    q = fingerprint.query_from_workspace(ws)
+    if args.ports or args.services:
+        if args.ports:
+            q["ports"] = [p.strip() for p in args.ports.split(",") if p.strip()]
+        if args.services:
+            q["services"] = [s.strip() for s in args.services.split(",") if s.strip()]
+    if not q["ports"] and not q["services"]:
+        print("no recon fingerprint yet (no nmap output in the workspace) — "
+              "pass --ports/--services or run recon first", file=sys.stderr)
+        return 2
+    hits = fingerprint.rank(q, base, top=args.top, min_sim=args.min_sim)
+    bias = fingerprint.category_bias(q, base, min_sim=args.min_sim)
+    if args.json:
+        ui.json_out({"query": q, "hits": hits, "category_bias": bias})
+        return 0
+    if not hits:
+        print("(no similar solved boxes — run `bb fingerprints rebuild` after solves)")
+        return 0
+    rows = [[h["machine"], f"{h['sim']:.2f}", ", ".join(h["ports"][:8]),
+             ", ".join(h["confirmed_categories"]) or "-", h["root_s"] or "-"]
+            for h in hits]
+    ui.table("similar solved boxes", ["machine", "sim", "ports", "confirmed cats",
+                                      "root_s"], rows)
+    if bias:
+        ui.panel("next-hyp bias", "\n".join(
+            f"- {cat}: ×{b['mult']:.2f} (from {b['source']}, sim {b['sim']:.2f})"
+            for cat, b in sorted(bias.items())), style="cyan")
+    return 0
+
+
 # ---- doctor / next-hyp --------------------------------------------------
 
 def cmd_doctor(args) -> int:
@@ -712,15 +941,25 @@ def cmd_next_hyp(args) -> int:
         if changed:
             print(f"updated {len(changed)} flat-default cost(s) from priors")
     st = TargetState.load(ws)
-    rows = priors.adjusted(st, pri)
+    bias = None
+    if not args.no_sim_bias:
+        try:
+            q = fingerprint.query_from_workspace(ws)
+            if q["ports"] or q["services"]:
+                bias = fingerprint.category_bias(q, base)
+        except Exception:
+            bias = None
+    rows = priors.adjusted(st, pri, bias=bias)
     if args.json:
         ui.json_out(rows)
         return 0
     table_rows = [[i + 1, r["id"], f"{r['score']:.2f}", f"{r['confidence']:.2f}",
                    f"{r['cost']:.2f}", f"{r['effective_cost']:.2f}", r["category"],
-                   (r["statement"] or "")[:60]] for i, r in enumerate(rows)]
+                   r.get("sim_hint") or "", (r["statement"] or "")[:60]]
+                  for i, r in enumerate(rows)]
     ui.table(f"next hypotheses — {config.rel(ws, base)}",
-             ["#", "id", "score", "conf", "stored cost", "eff. cost", "category", "statement"],
+             ["#", "id", "score", "conf", "stored cost", "eff. cost", "category",
+              "sim hint", "statement"],
              table_rows)
     return 0
 
@@ -753,6 +992,9 @@ def build_parser() -> argparse.ArgumentParser:
   bb skills kerberoast
   bb gate --workspace labs/HTB/machines/Connected --target 10.129.122.68 --cmd "nmap -sV 10.129.122.68" --keywords recon --mode htb
   bb dashboard --port 8765
+  bb benchmark pin --machine Connected
+  bb benchmark gate --machine Connected --snapshot benchmark/runs/Connected-new.json
+  bb benchmark gate --machine Connected --run --max-minutes 40
   bb doctor
 """)
     p.add_argument("--version", action="version", version=f"bb {__version__}")
@@ -797,6 +1039,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"subset of {', '.join(config.ROLE_SPECIALISTS)}")
     sp.add_argument("--timeout", type=int, default=900, help="per-turn seconds")
     sp.add_argument("--no-ui", action="store_true")
+    sp.add_argument("--no-verify", action="store_true",
+                    help="disable the second-opinion pass on hypothesis confirms")
     sp.add_argument("--dry-run", action="store_true",
                     help="write prompts/logs but do not invoke opencode")
     sp.set_defaults(func=cmd_run)
@@ -873,7 +1117,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-generate", action="store_true")
     sp.set_defaults(func=cmd_learn)
 
-    sp = sub.add_parser("benchmark", parents=[common], help="compare/summary/priors")
+    sp = sub.add_parser("benchmark", parents=[common],
+                        help="compare/summary/priors/pin/gate")
     bsub = sp.add_subparsers(dest="bench_cmd")
     for name in ("summary", "priors", "snapshot"):
         x = bsub.add_parser(name, parents=[common])
@@ -881,6 +1126,37 @@ def build_parser() -> argparse.ArgumentParser:
         x.add_argument("--no-write", action="store_true")
     x = bsub.add_parser("compare", parents=[common])
     x.add_argument("files", nargs="*")
+    x = bsub.add_parser("pin", parents=[common],
+                        help="pin a regression baseline from a saved run")
+    x.add_argument("--machine", required=True)
+    x.add_argument("--from", dest="run_from", default=None, metavar="RUN_JSON",
+                   help="saved run to pin (default: fewest-action run for the machine)")
+    x.add_argument("--actions-pct", type=float, default=None,
+                   help="override unique_actions band (%%)")
+    x.add_argument("--deadends-abs", type=float, default=None)
+    x.add_argument("--deadends-pct", type=float, default=None)
+    x.add_argument("--time-pct", type=float, default=None,
+                   help="override time_to_* bands (%%)")
+    x.add_argument("--confirmed-abs", type=float, default=None,
+                   help="override hypotheses_confirmed absolute floor")
+    x.add_argument("--notes", default="")
+    x.set_defaults(func=cmd_benchmark_pin)
+    x = bsub.add_parser("gate", parents=[common],
+                        help="regression gate: compare a run against the pinned baseline")
+    x.add_argument("--machine", required=True)
+    x.add_argument("--snapshot", default=None, metavar="RUN_JSON",
+                   help="saved run to compare (default: latest for the machine)")
+    x.add_argument("--run", action="store_true",
+                   help="re-run the lab in a scratch workspace, snapshot, compare, clean up")
+    x.add_argument("--target", default=None)
+    x.add_argument("--model", default=None)
+    x.add_argument("--max-rounds", type=int, default=20)
+    x.add_argument("--max-minutes", type=float, default=None,
+                   help="wall-clock guard (default: 3x baseline time-to-root)")
+    x.add_argument("--dry-run", action="store_true")
+    x.add_argument("--keep", action="store_true", help="keep the gate scratch workspace")
+    x.add_argument("--no-ui", action="store_true")
+    x.set_defaults(func=cmd_benchmark_gate)
     sp.set_defaults(func=cmd_benchmark, files=None, workspace=None, no_write=False,
                     bench_cmd=None)
 
@@ -912,7 +1188,46 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--workspace", required=True)
     sp.add_argument("--apply", action="store_true",
                     help="write calibrated costs back for flat-default hypotheses")
+    sp.add_argument("--no-sim-bias", action="store_true",
+                    help="disable the similar-box category bias (§2.1)")
     sp.set_defaults(func=cmd_next_hyp)
+
+    sp = sub.add_parser("assets", parents=[common],
+                        help="scope-aware asset store + diff (§3.1)")
+    sp.add_argument("--workspace", default=None)
+    asub = sp.add_subparsers(dest="assets_cmd")
+    x = asub.add_parser("scan", parents=[common],
+                        help="passive enum + rate-limited probe, diff vs last set")
+    x.add_argument("--workspace", default=argparse.SUPPRESS)
+    x.add_argument("--mode", choices=["bounty", "bugbounty", "htb"], default="bounty")
+    x.add_argument("--ingest-leads", action="store_true",
+                   help="add every new asset to the lead board")
+    x = asub.add_parser("show", parents=[common])
+    x.add_argument("--workspace", default=argparse.SUPPRESS)
+    sp.set_defaults(func=cmd_assets, assets_cmd="show", mode="bounty",
+                    ingest_leads=False)
+
+    sp = sub.add_parser("composite", parents=[common],
+                        help="list/show composite action bundles (§2.2)")
+    csub = sp.add_subparsers(dest="composite_cmd")
+    csub.add_parser("list", parents=[common])
+    x = csub.add_parser("show", parents=[common])
+    x.add_argument("name")
+    sp.set_defaults(func=cmd_composite, composite_cmd="list", name=None)
+
+    sp = sub.add_parser("fingerprints", parents=[common],
+                        help="rebuild the solved-box fingerprint index (§2.1)")
+    sp.add_argument("rebuild", nargs="?", default="rebuild", choices=["rebuild"])
+    sp.set_defaults(func=cmd_fingerprints)
+
+    sp = sub.add_parser("similar", parents=[common],
+                        help="rank past solved boxes against this workspace's recon fingerprint")
+    sp.add_argument("--workspace", default=None)
+    sp.add_argument("--ports", default=None, help="comma-separated, e.g. 22,443/tcp")
+    sp.add_argument("--services", default=None, help="comma-separated, e.g. ssh,https")
+    sp.add_argument("--top", type=int, default=3)
+    sp.add_argument("--min-sim", type=float, default=0.05)
+    sp.set_defaults(func=cmd_similar)
     return p
 
 

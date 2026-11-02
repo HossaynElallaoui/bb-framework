@@ -126,8 +126,14 @@ def suggest_cost(hyp, priors: dict | None = None) -> tuple[float, str]:
     return float(priors.get("default_cost", DEFAULT_COST)), "default"
 
 
-def adjusted(state, priors: dict | None = None) -> list[dict]:
-    """Ranked open hypotheses with prior-adjusted cost (does not mutate)."""
+def adjusted(state, priors: dict | None = None,
+             bias: dict[str, dict] | None = None) -> list[dict]:
+    """Ranked open hypotheses with prior-adjusted cost (does not mutate).
+
+    `bias` maps category -> {mult, source, sim} from the similar-box
+    fingerprint index (§2.1); matching categories get a modest score
+    multiplier so hypotheses that worked on the most similar past box rise,
+    without ever hiding the underlying confidence/cost math."""
     priors = priors or load_priors()
     out = []
     for h in state.hypotheses.values():
@@ -138,11 +144,17 @@ def adjusted(state, priors: dict | None = None) -> list[dict]:
         # only override the flat default, never a cost a human deliberately set
         if abs(float(h.cost) - float(priors.get("default_cost", DEFAULT_COST))) < 1e-9:
             cost = prior
+        score = h.confidence / max(cost, 0.1)
+        hint = ""
+        b = (bias or {}).get(category)
+        if b:
+            score *= b["mult"]
+            hint = f"← {b['source']} (sim {b['sim']:.2f})"
         out.append({
             "id": h.id, "statement": h.statement, "status": h.status,
             "confidence": h.confidence, "cost": h.cost, "prior_cost": prior,
             "effective_cost": cost, "category": category,
-            "score": h.confidence / max(cost, 0.1),
+            "score": score, "sim_hint": hint,
             "test": h.test, "evidence": h.evidence,
         })
     out.sort(key=lambda d: d["score"], reverse=True)

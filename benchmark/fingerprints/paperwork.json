@@ -1,0 +1,24 @@
+{
+  "machine": "Paperwork",
+  "solved": true,
+  "ports": [
+    "1515/tcp",
+    "22/tcp",
+    "80/tcp"
+  ],
+  "services": [
+    "http",
+    "ifor-protocol",
+    "ssh"
+  ],
+  "products": [],
+  "os": [],
+  "confirmed_categories": [
+    "auth-flow",
+    "exploit",
+    "recon-scan"
+  ],
+  "actions": 11,
+  "root_s": 2124.4,
+  "built_at": "2026-11-02T19:06:49+00:00"
+}

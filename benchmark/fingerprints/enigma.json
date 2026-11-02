@@ -1,0 +1,50 @@
+{
+  "machine": "enigma",
+  "solved": true,
+  "ports": [
+    "110/tcp",
+    "111/tcp",
+    "143/tcp",
+    "2049/tcp",
+    "22/tcp",
+    "34633/tcp",
+    "43123/tcp",
+    "48705/tcp",
+    "52633/tcp",
+    "55901/tcp",
+    "80/tcp",
+    "993/tcp",
+    "995/tcp"
+  ],
+  "services": [
+    "http",
+    "imap",
+    "imaps",
+    "nfs",
+    "nfs_acl",
+    "pop3",
+    "pop3s",
+    "rpcbind",
+    "ssh",
+    "ssl",
+    "ssl/imap",
+    "ssl/pop3",
+    "unknown"
+  ],
+  "products": [
+    "dovecot",
+    "nginx",
+    "openssh"
+  ],
+  "os": [
+    "ubuntu"
+  ],
+  "confirmed_categories": [
+    "auth-flow",
+    "privesc",
+    "recon-scan"
+  ],
+  "actions": 35,
+  "root_s": 2692.0,
+  "built_at": "2026-11-02T19:06:49+00:00"
+}

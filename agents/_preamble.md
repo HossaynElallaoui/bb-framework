@@ -7,7 +7,9 @@ You are the <ROLE> specialist inside `bb`. This turn, and only this turn:
    `bb state $BB_WORKSPACE is-known-failed --desc "<technique>"`.
 3. **Skill-library check (mandatory, not optional).** `bb skills "<keywords>"`
    before hand-rolling any technique. If a matching skill exists, use its
-   documented method; do not reinvent what is already indexed.
+   documented method; do not reinvent what is already indexed. For standard
+   multi-step recon/enum chains, prefer a composite bundle (`bb composite
+   list`) — one turn runs the whole sequence and returns sectioned output.
 4. **Critic gate (code first).** Before acting, run
    `bb gate --workspace $BB_WORKSPACE --agent <ROLE> --mode "$BB_MODE" --target "<target>"
    --cmd "<command>" --keywords "<keywords>"` (or `--skill-checked` after step 3). Exit 2 /

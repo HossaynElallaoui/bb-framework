@@ -10,7 +10,19 @@ A deterministic, round-robin multi-agent framework for bug bounty hunting and Ha
 - **State management**: append-only action log, hypothesis tracking, mailbox for inter-agent handoffs
 - **Web dashboard**: real-time agent status, token/cost tracking, long-polling updates
 - **Skill library**: cached keyword lookup with 1800+ techniques
+- **Similar-box retrieval**: solved-machine fingerprint index (weighted Jaccard over
+  ports/services/products/OS) biases `next-hyp` toward categories that worked on the
+  most similar past box
+- **Composite bundles**: `bb composite list` — standard recon/enum chains in one turn
+- **Asset diffing**: `bb assets scan` — passive subdomain enum + rate-limited probes,
+  scope-gated, diffs against the last known asset set and can ingest new surface as leads
+- **Synchronous validation**: `update-hyp --status confirmed` auto-creates a finding
+  skeleton and runs the deterministic gates immediately (confirmed-but-unvalidated is visible)
+- **Second-opinion pass**: every confirm gets a cheap, differently-prompted verifier turn on
+  the existing evidence; a KICKBACK deterministically reverts the confirm (`--no-verify` to disable)
 - **Benchmark priors**: hypothesis confidence auto-adjusted from historical runs
+- **Regression gate**: `bb benchmark pin` + `bb benchmark gate` fail any change that
+  regresses actions/dead-ends/time-to-root beyond a tolerance band vs the pinned gold run
 
 ## Quick Start
 

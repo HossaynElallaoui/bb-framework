@@ -33,14 +33,21 @@ and the operator can steer or pause a long run without killing it.
    hypothesis immediately (`bb state ... add-hyp`), so `next-hyp` always has a
    fresh cheap candidate. Findings that are not yet claimed live on
    `bb leads` — the board remembers the rest while a hunter focuses on one.
-6. **Synchronous validation.** The moment a hypothesis flips to `confirmed`,
-   write a finding JSON under the workspace `findings/` and run
-   `bb validate <finding-id> --workspace <ws>`. The 4 deterministic gates
-   (`is_real` / `in_scope` / `exploitable` / `not_dup`) and the 7-question
-   critic gate run immediately — confirmed-but-unvalidated work is not allowed
-   to sit. Gate 4 checks the local finding registry for duplicates; a live
-   HackerOne Hacktivity cross-check is a manual operator step, not a model
-   decision.
+6. **Synchronous validation (engine-enforced).** The moment a hypothesis flips
+   to `confirmed`, `bb state ... update-hyp --status confirmed` automatically
+   writes a finding skeleton under the workspace `findings/` and runs the 4
+   deterministic gates (`is_real` / `in_scope` / `exploitable` / `not_dup`)
+   plus the 7-question critic gate on it, recording the outcome in
+   `bb_last_validation` and the critic's mailbox. A skeleton starts as
+   `confirmed_unvalidated` and fails the evidence gates by design — attach
+   evidence and run `bb validate <finding-id>` to flip it. Gate 4 checks the
+   local finding registry for duplicates; a live HackerOne Hacktivity
+   cross-check is a manual operator step, not a model decision.
+   Additionally, every confirm produced by a specialist turn gets a cheap
+   second-opinion verifier turn (skeptical system prompt, existing evidence
+   only, no new actions); a `VERDICT: KICKBACK` deterministically reverts the
+   hypothesis to `open` with the reason in the result and the specialist's
+   inbox. Disable with `bb run --no-verify`.
 7. **Report draft.** `bb report <finding-id> --workspace <ws>` renders from
    `programs/_template/reports/finding-template.md` with evidence paths. The
    operator reviews and edits; nothing is auto-submitted. Raw secret-looking

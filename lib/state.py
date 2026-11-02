@@ -620,6 +620,73 @@ class TargetState:
         }
 
 
+def _auto_validate_on_confirm(workspace: Path, hyp, state) -> None:
+    """§3.5 synchronous validation: the moment a hypothesis flips to
+    `confirmed`, create a finding skeleton (unless one already exists for the
+    hypothesis) and run the deterministic gates on it immediately, so
+    confirmed-but-unvalidated work is visible instead of silently sitting.
+
+    Fail-open: when the full bb tree is not importable (state.py is copied
+    standalone into smoke-test roots), this prints a manual-follow-up hint
+    and changes nothing."""
+    fdir = Path(workspace) / "findings"
+    existing = None
+    if fdir.is_dir():
+        for p in sorted(fdir.glob("*.json")):
+            try:
+                d = json.loads(p.read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(d, dict) and (d.get("hypothesis_id") == hyp.id
+                                        or d.get("id") == hyp.id):
+                existing = d
+                break
+    if existing is None:
+        fdir.mkdir(parents=True, exist_ok=True)
+        skeleton = {
+            "id": hyp.id, "hypothesis_id": hyp.id,
+            "program": Path(workspace).name,
+            "target": state.target or "", "endpoint": "", "method": "",
+            "vuln_class": "", "summary": hyp.statement, "impact": "",
+            "curl_poc": "", "evidence": [], "control_evidence": "",
+            "reproduced": False, "deterministic": False, "not_documented": False,
+            "identity_proven": False, "unrealistic_preconditions": False,
+            "chain_proven": False, "skill_checked": False, "already_tried": False,
+            "cheaper_test": "", "confirm_refute": hyp.test or "",
+            "refute_plan": "", "status": "confirmed_unvalidated",
+        }
+        tmp = fdir / f"{hyp.id}.json.tmp"
+        tmp.write_text(json.dumps(skeleton, indent=2) + "\n")
+        os.replace(tmp, fdir / f"{hyp.id}.json")
+        print(f"auto: finding skeleton findings/{hyp.id}.json created "
+              f"(confirmed_unvalidated) — attach evidence, then `bb validate {hyp.id}`")
+    else:
+        print(f"auto: existing finding for {hyp.id} — run `bb validate {hyp.id}`")
+
+    try:
+        root = Path(__file__).resolve().parent.parent
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        from lib.bb import validate as bb_validate
+        f = json.loads((fdir / f"{hyp.id}.json").read_text())
+        payload = bb_validate.validate(f, workspace=Path(workspace), base=root,
+                                       write=False)
+        failed = [f"gate{g['n']}_{g['name']}" for g in payload.get("gates", [])
+                  if not g["pass"]]
+        state.extra["bb_last_validation"] = {
+            "hypothesis_id": hyp.id, "finding_id": hyp.id,
+            "status": payload.get("status"), "failed_gates": failed,
+            "at": time.time()}
+        state.post_message(
+            "state", "critic-agent",
+            f"{hyp.id} confirmed -> findings/{hyp.id}.json; auto-gates: "
+            f"{'PASS' if not failed else 'FAIL ' + ','.join(failed)}; "
+            f"attach evidence then `bb validate {hyp.id}`", "request")
+        state.save()
+    except Exception as exc:  # standalone state.py: validation is a manual step
+        print(f"auto-validate unavailable ({exc}) — run `bb validate {hyp.id}` manually")
+
+
 def _validate_mutation(cmd: str, args) -> str:
     """Strict checks at the CLI boundary. Unknown keys are the state loader's
     problem; known fields must be the right type/range before any save."""
@@ -837,6 +904,8 @@ def _run_command(args, cmd: str) -> None:
         h = state.update_hypothesis(args.id, **kwargs)
         state.save()
         print(f"updated {h.id}: status={h.status}")
+        if h.status == "confirmed":
+            _auto_validate_on_confirm(args.workspace, h, state)
 
     elif cmd == "set-extra":
         try:

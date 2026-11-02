@@ -43,6 +43,7 @@ def setup_root() -> Path:
     (root / "lib").mkdir()
     shutil.copy2(REAL / "lib" / "skill_roots.json", root / "lib" / "skill_roots.json")
     shutil.copy2(REAL / "lib" / "state.py", root / "lib" / "state.py")
+    shutil.copytree(REAL / "lib" / "bb", root / "lib" / "bb")
     (root / "scripts").mkdir()
     shutil.copy2(REAL / "scripts" / "skills_lookup.py", root / "scripts" / "skills_lookup.py")
     (root / "benchmark" / "runs").mkdir(parents=True)
@@ -51,6 +52,11 @@ def setup_root() -> Path:
     (root / "skills").mkdir()
     (root / "findings").mkdir()
     (root / "labs" / "HTB" / "machines").mkdir(parents=True)
+    (root / "composites").mkdir()
+    for name in ("web-recon.sh", "ad-enum.sh", "lin-privesc.sh"):
+        shutil.copy2(REAL / "composites" / name, root / "composites" / name)
+    shutil.copy2(REAL / "composites" / "manifest.json",
+                 root / "composites" / "manifest.json")
     return root
 
 
@@ -164,6 +170,20 @@ def main() -> int:
         assert "gate4" in r.stdout.lower() or "duplicate" in r.stdout.lower()
         print("[7] duplicate rejected by gate 4")
 
+        # §3.5 synchronous validation: confirm -> skeleton + auto-gates
+        run(root, "state", str(ws), "add-hyp", "--id", "h3",
+            "--statement", "idor in /v1/users", "--confidence", "0.8", expect=0)
+        run(root, "state", str(ws), "update-hyp", "--id", "h3",
+            "--status", "confirmed", "--result", "200 with victim data", expect=0)
+        skel = ws / "findings" / "h3.json"
+        assert skel.exists(), "auto finding skeleton not created"
+        assert json.loads(skel.read_text())["status"] == "confirmed_unvalidated"
+        raw = json.loads((ws / "state.json").read_text())
+        lv = raw.get("bb_last_validation") or {}
+        assert lv.get("hypothesis_id") == "h3" and lv.get("failed_gates"), lv
+        assert any("h3 confirmed" in m.get("text", "") for m in raw.get("messages", []))
+        print("[7b] confirm -> finding skeleton + auto-gates + mailbox")
+
         # learning loop: add a confirmed hypothesis and commit an approved skill
         run(root, "state", str(ws), "add-hyp", "--id", "h2",
             "--statement", "IDOR in /v1/users allows cross-tenant profile reads",
@@ -203,6 +223,98 @@ def main() -> int:
         run(root, "doctor", expect=0)
         assert (root / "MANIFEST.json").exists()
         print("[10] benchmark + doctor + MANIFEST")
+
+        # regression gate: pin -> self-compare pass -> regressed run fails
+        run(root, "benchmark", "pin", "--machine", "Connected", expect=0)
+        assert (root / "benchmark" / "baselines" / "connected.json").exists()
+        gold = root / "benchmark" / "runs" / "Connected-1792265326.json"
+        if not gold.exists():
+            gold = next((root / "benchmark" / "runs").glob("Connected-*.json"))
+        run(root, "benchmark", "gate", "--machine", "Connected",
+            "--snapshot", str(gold), expect=0)
+        bad = root / "benchmark" / "runs" / "Connected-9999999999.json"
+        bad.write_text(json.dumps({
+            "machine": "Connected", "unique_actions": 30, "dead_ends": 3,
+            "time_to_root_s": 800.0, "hypotheses_confirmed": 2}))
+        run(root, "benchmark", "gate", "--machine", "Connected",
+            "--snapshot", str(bad), expect=1)
+        run(root, "benchmark", "gate", "--machine", "Nosuch",
+            "--snapshot", str(bad), expect=2)
+        # live plumbing (offline): dry-run gate produces no root -> regress
+        run(root, "benchmark", "gate", "--machine", "Connected", "--run",
+            "--dry-run", "--target", "10.10.10.10", "--no-ui", expect=1)
+        print("[11] regression gate pin/pass/regress/no-baseline/dry-run")
+
+        # similar-box fingerprints: synthetic solved box -> index -> similar
+        fws = root / "labs" / "HTB" / "machines" / "Goldbox"
+        fws.mkdir(parents=True)
+        (fws / "nmap_svc.txt").write_text(
+            "PORT     STATE SERVICE VERSION\n"
+            "22/tcp   open  ssh     OpenSSH 7.4 (protocol 2.0)\n"
+            "443/tcp  open  ssl/https Apache/2.4.6 (CentOS) PHP/7.4.16\n")
+        gold_state = {
+            "target": "10.10.10.1", "mode": "htb", "started_at": 0.0,
+            "actions": {"a": {"key": "a", "command": "nmap -sV", "result_summary": "x",
+                              "timestamp": 0.0}},
+            "hypotheses": {"h1": {"id": "h1", "statement": "web app SQLi gives admin",
+                                  "evidence": "e", "confidence": 0.9, "cost": 2.0,
+                                  "test": "probe", "status": "confirmed",
+                                  "result": "r", "created_at": 0.0,
+                                  "updated_at": 0.0},
+                           "h2": {"id": "h2", "statement": "SQLi in the product page dumps the database",
+                                  "evidence": "", "confidence": 0.5, "cost": 1.0,
+                                  "test": "probe", "status": "open",
+                                  "result": "", "created_at": 0.0,
+                                  "updated_at": 0.0}},
+            "failed_paths": [], "milestones": {"root": 100.0, "flag": 101.0},
+            "messages": [], "extra": {}}
+        (fws / "state.json").write_text(json.dumps(gold_state))
+        run(root, "fingerprints", "rebuild", expect=0)
+        r = run(root, "similar", "--workspace", str(fws), "--json", expect=0)
+        sim = json.loads(r.stdout)
+        assert sim["hits"] and sim["hits"][0]["machine"] == "Goldbox", sim
+        assert "exploit" in sim["category_bias"], sim
+        r = run(root, "next-hyp", "--workspace", str(fws), "--json", expect=0)
+        rows = json.loads(r.stdout)
+        assert rows and rows[0].get("sim_hint"), rows
+        print("[12] fingerprint index + similar + next-hyp bias")
+
+        run(root, "composite", "list", expect=0)
+        r = run(root, "composite", "show", "web-recon", "--json", expect=0)
+        assert json.loads(r.stdout)["script"] == "web-recon.sh"
+        run(root, "composite", "show", "nosuch", expect=2)
+        print("[13] composite bundles list/show")
+
+        # §3.1 asset diffing: pure logic offline + CLI surface
+        sys.path.insert(0, str(REAL))
+        from lib.bb import assets as bb_assets
+        assert bb_assets.norm_host("Example.COM.") == "example.com"
+        assert bb_assets.norm_url("https://api.demo.test/v1/users/?x=1") == \
+            "https://api.demo.test/v1/users"
+        d = bb_assets.diff_records({"a": 1, "b": 2}, {"b": 2, "c": 3})
+        assert d == {"added": ["c"], "gone": ["a"], "unchanged": ["b"]}, d
+        run(root, "assets", "show", "--workspace", str(ws), expect=0)
+        print("[14] asset diffing pure logic + CLI")
+
+        # §1.2 second-opinion pass: verdict parsing + deterministic kickback
+        from lib.bb import verify as bb_verify
+        assert bb_verify.parse_verdict("VERDICT: AGREE")[0] == "agree"
+        assert bb_verify.parse_verdict(
+            "VERDICT: KICKBACK — no control result shown")[0] == "kickback"
+        assert bb_verify.parse_verdict("looks fine to me")[0] == "unclear"
+        run(root, "state", str(ws), "add-hyp", "--id", "h9",
+            "--statement", "idor check", "--confidence", "0.9", expect=0)
+        run(root, "state", str(ws), "update-hyp", "--id", "h9",
+            "--status", "confirmed", "--result", "200", expect=0)
+        assert bb_verify.apply_kickback(ws, "h9", "no control shown", "web-agent")
+        raw = json.loads((ws / "state.json").read_text())
+        assert raw["hypotheses"]["h9"]["status"] == "open"
+        assert raw["bb_verifications"][0]["verdict"] == "kickback"
+        assert not bb_verify.apply_kickback(ws, "h9", "again", "web-agent")
+        run(root, "run", "--mode", "htb", "--workspace", str(drun),
+            "--target", "10.10.10.10", "--dry-run", "--max-rounds", "1",
+            "--no-ui", "--no-verify", expect=0)
+        print("[15] verify pass: parse/kickback/no-verify flag")
 
         print("\nALL BB CHECKS PASSED")
         return 0

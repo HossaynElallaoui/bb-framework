@@ -1,0 +1,30 @@
+{
+  "machine": "DarkZeroReturns",
+  "solved": true,
+  "ports": [
+    "22/tcp",
+    "80/tcp"
+  ],
+  "services": [
+    "http",
+    "ssh"
+  ],
+  "products": [
+    "nginx",
+    "openssh"
+  ],
+  "os": [
+    "ubuntu"
+  ],
+  "confirmed_categories": [
+    "ad",
+    "auth-flow",
+    "authz-comparison",
+    "exploit",
+    "privesc",
+    "recon-scan"
+  ],
+  "actions": 41,
+  "root_s": 15370.0,
+  "built_at": "2026-11-02T19:06:49+00:00"
+}

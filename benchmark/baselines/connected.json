@@ -1,0 +1,42 @@
+{
+  "machine": "Connected",
+  "pinned_from": "Connected-1792265326.json",
+  "pinned_at": 1793646158,
+  "metrics": {
+    "unique_actions": 23,
+    "dead_ends": 1,
+    "time_to_user_s": 278.4359004497528,
+    "time_to_root_s": 566.7434058189392,
+    "time_to_flag_s": 566.8173966407776,
+    "hypotheses_confirmed": 4
+  },
+  "tolerances": {
+    "unique_actions": {
+      "kind": "pct_up",
+      "pct": 20
+    },
+    "dead_ends": {
+      "kind": "dead_ends",
+      "pct": 50,
+      "abs": 1
+    },
+    "time_to_user_s": {
+      "kind": "pct_up",
+      "pct": 25
+    },
+    "time_to_root_s": {
+      "kind": "pct_up",
+      "pct": 25
+    },
+    "time_to_flag_s": {
+      "kind": "pct_up",
+      "pct": 25
+    },
+    "hypotheses_confirmed": {
+      "kind": "count_down",
+      "pct": 25,
+      "abs": 1
+    }
+  },
+  "notes": ""
+}

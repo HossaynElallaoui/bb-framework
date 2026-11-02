@@ -1,0 +1,26 @@
+{
+  "machine": "Autopilot",
+  "solved": true,
+  "ports": [
+    "443/tcp"
+  ],
+  "services": [
+    "http",
+    "https",
+    "ssl",
+    "ssl/http"
+  ],
+  "products": [
+    "nginx"
+  ],
+  "os": [],
+  "confirmed_categories": [
+    "ad",
+    "auth-flow",
+    "privesc",
+    "recon-scan"
+  ],
+  "actions": 196,
+  "root_s": 106027.7,
+  "built_at": "2026-11-02T19:06:49+00:00"
+}

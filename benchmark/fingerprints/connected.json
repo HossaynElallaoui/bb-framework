@@ -1,0 +1,30 @@
+{
+  "machine": "Connected",
+  "solved": true,
+  "ports": [
+    "22/tcp",
+    "443/tcp",
+    "80/tcp"
+  ],
+  "services": [
+    "http",
+    "https",
+    "ssh",
+    "ssl",
+    "ssl/https"
+  ],
+  "products": [
+    "apache",
+    "openssh"
+  ],
+  "os": [
+    "centos"
+  ],
+  "confirmed_categories": [
+    "auth-flow",
+    "exploit"
+  ],
+  "actions": 23,
+  "root_s": 566.7,
+  "built_at": "2026-11-02T19:06:49+00:00"
+}

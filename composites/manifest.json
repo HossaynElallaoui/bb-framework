@@ -1,0 +1,23 @@
+{
+  "web-recon": {
+    "script": "web-recon.sh",
+    "usage": "web-recon.sh <base-url> [wordlist]",
+    "description": "Standard first-pass web chain: headers, whatweb, robots/sitemap, shallow feroxbuster. One turn instead of ~4.",
+    "modes": ["htb", "bounty", "bugbounty"],
+    "replaces_turns": 4
+  },
+  "ad-enum": {
+    "script": "ad-enum.sh",
+    "usage": "ad-enum.sh <dc-ip> [domain.fqdn]",
+    "description": "Unauthenticated AD bundle: netexec SMB/signing+shares, LDAP rootDSE, DNS A/AXFR/SRV, kerberos port probe. One turn instead of ~6.",
+    "modes": ["htb", "bounty", "bugbounty"],
+    "replaces_turns": 6
+  },
+  "lin-privesc": {
+    "script": "lin-privesc.sh",
+    "usage": "lin-privesc.sh",
+    "description": "Local Linux privesc sweep: sudo -l, SUID, capabilities, cron, writable unit paths, dangerous groups, credential classics. One turn instead of ~7.",
+    "modes": ["htb", "bounty", "bugbounty"],
+    "replaces_turns": 7
+  }
+}
