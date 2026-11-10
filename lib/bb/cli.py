@@ -18,8 +18,9 @@ import sys
 import time
 from pathlib import Path
 
-from lib.bb import __version__, benchmark, config, doctor, learn, leads, priors, report
+from lib.bb import __version__, benchmark, config, doctor, learn, leads, opencode_conf, priors, report
 from lib.bb import gate, regression, runner, scope, statex, ui, validate
+from lib.bb.session import OpenCodeServer
 from lib.bb import assets, fingerprint
 from lib.state import TargetState
 
@@ -1095,6 +1096,127 @@ def cmd_next_hyp(args) -> int:
     return 0
 
 
+# ---- opencode config / models -------------------------------------------
+
+def cmd_models(args) -> int:
+    base = _base(args)
+    cfg_path = getattr(args, "config", None)
+    cfg, used = opencode_conf.load_opencode_config(cfg_path)
+    if not cfg:
+        print("error: could not read any opencode config "
+              "(~/.config/opencode/opencode.json|jsonc)", file=sys.stderr)
+        return 2
+    providers = opencode_conf.extract_providers(cfg)
+    models = opencode_conf.list_models(cfg, include_disabled=getattr(args, "all", False))
+    if args.json:
+        out = {
+            "config_path": str(used) if used else None,
+            "default_model": opencode_conf.default_model(cfg),
+            "providers": {pid: {k: v for k, v in p.items() if k != "apiKey"}
+                          | {"has_api_key": bool(p.get("apiKey"))}
+                          for pid, p in providers.items()},
+            "models": models,
+        }
+        ui.json_out(out)
+        return 0
+    ui.kv_table("opencode config", {
+        "path": str(used) if used else "(not found)",
+        "default model": opencode_conf.default_model(cfg) or "(none)",
+        "providers": len(providers),
+        "models": len(models),
+    })
+    rows = []
+    q = (getattr(args, "query", None) or "").lower()
+    for m in models:
+        hay = f"{m['ref']} {m['name']} {m['provider_name']} {m.get('baseURL') or ''}".lower()
+        if q and q not in hay:
+            continue
+        rows.append([m["ref"], m["name"], m.get("baseURL") or "-",
+                     "yes" if m.get("has_api_key") else "no"])
+    if rows:
+        ui.table("models & APIs (from opencode conf)", ["model ref", "name", "baseURL", "api key"], rows)
+    else:
+        print("(no models matched)")
+    return 0
+
+
+def cmd_chat(args) -> int:
+    """Interactive CLI (opencode-like) using models/APIs from opencode config."""
+    base = _base(args)
+    cfg, used = opencode_conf.load_opencode_config(getattr(args, "config", None))
+    model = getattr(args, "model", None) or opencode_conf.default_model(cfg)
+    if not model:
+        models = opencode_conf.list_models(cfg)
+        model = models[0]["ref"] if models else None
+    if not model:
+        print("error: no model found in opencode config; pass --model", file=sys.stderr)
+        return 2
+    workspace = Path(getattr(args, "workspace", None) or os.getcwd()).resolve()
+    prompt = getattr(args, "prompt", None)
+    one_shot = prompt is not None
+    log_dir = workspace / "agent_logs"
+    server = OpenCodeServer(base, log_dir=log_dir, model=model)
+    try:
+        ui.log("bb", f"starting opencode server for chat (model: {model})")
+        server.start()
+        sid = server.create_session(workspace, title="bb chat")
+        ui.log("bb", f"session {sid}  workspace={workspace}")
+        if used:
+            ui.log("bb", f"opencode config: {used}")
+        if one_shot:
+            res = server.prompt(sid, prompt, directory=workspace, model=model,
+                                timeout=getattr(args, "timeout", 900))
+            if res.text:
+                print(res.text)
+            if res.error:
+                print(f"error: {res.error}", file=sys.stderr)
+                return 1
+            return 0
+        print(f"bb chat — model: {model}  (type /exit to quit, /model <ref> to switch)")
+        while True:
+            try:
+                line = input("you> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not line.strip():
+                continue
+            if line.strip() in ("/exit", "/quit", ":q"):
+                break
+            if line.strip().startswith("/model"):
+                parts = line.strip().split(None, 1)
+                if len(parts) == 2 and parts[1].strip():
+                    model = parts[1].strip()
+                    print(f"(model set to {model})")
+                else:
+                    print(f"(current model: {model})")
+                continue
+            if line.strip() == "/models":
+                ms = opencode_conf.list_models(cfg)
+                for m in ms[:50]:
+                    mark = "*" if m["ref"] == model else " "
+                    print(f" {mark} {m['ref']}")
+                if len(ms) > 50:
+                    print(f"  ... ({len(ms)-50} more)")
+                continue
+            res = server.prompt(sid, line, directory=workspace, model=model,
+                                timeout=getattr(args, "timeout", 900))
+            if res.error and not res.text:
+                print(f"[error] {res.error}", file=sys.stderr)
+            if res.text:
+                print(res.text)
+        return 0
+    except Exception as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        try:
+            server.stop()
+        except Exception:
+            pass
+
+
+
 # ---- parser -------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1384,6 +1506,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--top", type=int, default=3)
     sp.add_argument("--min-sim", type=float, default=0.05)
     sp.set_defaults(func=cmd_similar)
+
+    sp = sub.add_parser("models", parents=[common],
+                        help="list models & APIs from opencode config")
+    sp.add_argument("query", nargs="?", default=None, help="filter (substring)")
+    sp.add_argument("--config", default=None, help="path to opencode config file")
+    sp.add_argument("--all", action="store_true", help="include disabled providers")
+    sp.set_defaults(func=cmd_models)
+
+    sp = sub.add_parser("chat", parents=[common],
+                        help="interactive CLI (opencode-like) using opencode models/APIs")
+    sp.add_argument("-m", "--model", default=None, help="model ref (provider/model)")
+    sp.add_argument("-p", "--prompt", default=None, help="one-shot prompt (non-interactive)")
+    sp.add_argument("--workspace", default=None, help="working directory for the session")
+    sp.add_argument("--config", default=None, help="path to opencode config file")
+    sp.add_argument("--timeout", type=int, default=900)
+    sp.set_defaults(func=cmd_chat)
+
     return p
 
 
